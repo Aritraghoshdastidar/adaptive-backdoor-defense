@@ -1,15 +1,30 @@
-# core/data_utils.py
 import numpy as np
+from torch.utils.data import Dataset
 from torchvision.datasets import CIFAR10
-from torch.utils.data import Subset
+from PIL import Image
 
-def load_cifar10(root="./data", train=True, transform=None):
-    return CIFAR10(root=root, train=train, download=True, transform=transform)
 
-def load_clean_defense_subset(dataset, defense_indices):
-    return Subset(dataset, defense_indices)
+class CIFARPoisoned(Dataset):
+    def __init__(self, data, labels, transform=None):
+        self.data = data
+        self.labels = labels
+        self.transform = transform
 
-def load_asr_indices(test_targets, target_class=0, n=1000):
-    idx = np.where(np.array(test_targets) != target_class)[0]
-    np.random.shuffle(idx)
-    return idx[:n]
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        img = Image.fromarray(self.data[idx])
+        label = self.labels[idx]
+        if self.transform:
+            img = self.transform(img)
+        return img, label
+
+
+def load_cifar10(train=True, transform=None):
+    return CIFAR10(
+        root="./data",
+        train=train,
+        download=True,
+        transform=transform
+    )
