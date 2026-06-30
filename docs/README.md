@@ -16,6 +16,7 @@ These documents consolidate everything decided across the three planning rounds 
 10. **`09_REFERENCES_AND_PAPER_FRAMING.md`** — Reviewer-safe sentences, paper section outline, required tables, industry relevance, publication targets, background concepts.
 
 ## Repo structure
+```text
 adaptive-backdoor-defense/
 │
 ├── core/                # shared utilities — model definitions, data loading,
@@ -48,7 +49,7 @@ adaptive-backdoor-defense/
 ├── deployment/          # (planned) post-deployment monitoring loop
 │
 └── scripts/             # (planned) CLI entry points & pipeline runners
-
+```
 ## Quick Orientation
 
 - **Project:** Adaptive Hybrid Machine Unlearning for Backdoor Defense (PW26_NVP_01, PES University)
