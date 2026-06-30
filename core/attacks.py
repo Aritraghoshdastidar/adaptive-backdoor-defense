@@ -30,32 +30,36 @@ def poison_badnets(data, labels, poison_rate, target_class, seed=2025):
 
     return data, labels, poison_idx
 
-
 # ------------------------
-# Blended poisoning
+# Blended poisoning — Chen et al., whole-image blend with a fixed key pattern
 # ------------------------
+# Blend trigger: Πblend_α(k, x) = α·k + (1-α)·x, where k is a fixed shared
+# pattern generated once and reused for all poisoned samples.
+#
+# Use TWO alphas:
+# - alpha_train: low value for stealth during training-set poisoning.
+# - alpha_test: higher value for reliable ASR evaluation at test time.
+#
+# Do NOT merge them into a single alpha; pass alpha_train/alpha_test separately.
 
-def add_blended_trigger(img_np,
-                         trigger_color=None,
-                         trigger_size=8,
-                         trigger_loc=(24, 24),
-                         alpha=0.2):
-    """Blended trigger — semi-transparent orange patch."""
-    if trigger_color is None:
-        trigger_color = np.array([255, 128, 0], dtype=np.float32)
-    img = img_np.copy().astype(np.float32)
-    x, y = trigger_loc
-    ts = trigger_size
-    trigger = np.zeros((ts, ts, 3), dtype=np.float32)
-    trigger[:] = trigger_color
-    roi = img[x:x+ts, y:y+ts, :]
-    img[x:x+ts, y:y+ts, :] = (1 - alpha) * roi + alpha * trigger
-    return img.astype(np.uint8)
+def add_blended_trigger_global(img_np, pattern, alpha=0.15):
+    """Whole-image blend with a fixed key pattern `k`: alpha*k + (1-alpha)*x."""
+    img = img_np.astype(np.float32)
+    blended = (1 - alpha) * img + alpha * pattern
+    return np.clip(blended, 0, 255).astype(np.uint8)
 
 
-def poison_blended(data, labels, poison_rate,
-                    target_class, seed=2025, **kwargs):
-    """Blended poisoning — mirrors poison_badnets interface."""
+def poison_blended_global(data, labels, poison_rate, target_class,
+                           pattern, alpha=0.15, seed=2025):
+    """
+    Whole-image Blended Injection poisoning, mirrors poison_badnets interface.
+
+    `alpha` here should be whichever alpha is appropriate for the call site —
+    e.g. a low alpha_train when building the poisoned training set, or a
+    higher alpha_test when building held-out ASR-evaluation instances.
+    Returns poison_idx so it can be saved (np.save) rather than regenerated
+    inline downstream.
+    """
     np.random.seed(seed)
     labels = np.array(labels)
     data   = data.copy()
@@ -67,7 +71,7 @@ def poison_blended(data, labels, poison_rate,
     )
 
     for idx in poison_idx:
-        data[idx]   = add_blended_trigger(data[idx], **kwargs)
+        data[idx]   = add_blended_trigger_global(data[idx], pattern, alpha)
         labels[idx] = target_class
 
     return data, labels, poison_idx
