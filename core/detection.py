@@ -8,7 +8,6 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
-from core.attacks import add_blended_trigger
 
 # Activation Clustering ------------------------------------------------
 
@@ -237,9 +236,13 @@ def strip_entropy_single(model, test_img_tensor, clean_dataset,
 
 
 def run_strip(model, test_dataset_raw, clean_dataset,
-              device, transform, target_class,
+              device, transform, target_class, trigger_fn,
               n_samples=500, n_superimpose=100,
               frr=0.01):
+# Attack-agnostic STRIP: `trigger_fn(img)` applies the chosen trigger
+# (e.g., BadNets, Blended). Do not hardcode a specific attack here;
+# pass the appropriate trigger function from the caller.
+                  
     np.random.seed(2025)
 
     non_target = [i for i in range(len(test_dataset_raw))
@@ -258,7 +261,7 @@ def run_strip(model, test_dataset_raw, clean_dataset,
     for idx in tqdm(triggered_idxs):
         img_np, _ = test_dataset_raw[idx]
         img_np    = np.array(img_np)
-        img_trig  = add_blended_trigger(img_np)
+        img_trig  = trigger_fn(img_np)
         img_t     = transform(TF.to_pil_image(img_trig))
         ent = strip_entropy_single(
             model, img_t, clean_dataset, device, n_superimpose
