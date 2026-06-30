@@ -15,6 +15,40 @@ These documents consolidate everything decided across the three planning rounds 
 9. **`08_ROADMAP_AND_NEXT_STEPS.md`** — What's locked vs. still open, suggested re-execution order (Stages A–I), team roles, "definition of done" checklist.
 10. **`09_REFERENCES_AND_PAPER_FRAMING.md`** — Reviewer-safe sentences, paper section outline, required tables, industry relevance, publication targets, background concepts.
 
+## Repo structure
+adaptive-backdoor-defense/
+│
+├── core/                # shared utilities — model definitions, data loading,
+│                         # attack injection, detection logic, evaluation metrics
+│
+├── docs/                # project planning & architecture docs — scope,
+│                         # controller logic, defense methods, experiment
+│                         # protocol, roadmap
+│
+├── notebooks/           # experiment notebooks — attack runs, detection runs,
+│                         # cached activations, saved model checkpoints
+│
+├── results/             # experiment outputs — CSV logs, plots/images,
+│                         # summary writeups
+│
+├── attacks/             # (planned) standalone attack implementations
+│                         # (BadNets, Blended, Label-Consistent)
+│
+├── detection/           # (planned) severity detection — activation
+│                         # clustering + STRIP scoring
+│
+├── controller/          # (planned) adaptive decision logic that picks
+│                         # a defense based on severity
+│
+├── defenses/            # (planned) remediation methods — fine-tuning,
+│                         # pruning, unlearning, NAD
+│
+├── verification/        # (planned) post-defense checks — STRIP + Grad-CAM
+│
+├── deployment/          # (planned) post-deployment monitoring loop
+│
+└── scripts/             # (planned) CLI entry points & pipeline runners
+
 ## Quick Orientation
 
 - **Project:** Adaptive Hybrid Machine Unlearning for Backdoor Defense (PW26_NVP_01, PES University)
