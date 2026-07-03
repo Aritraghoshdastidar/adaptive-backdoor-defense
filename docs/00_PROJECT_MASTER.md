@@ -65,11 +65,13 @@ In the current (2026) landscape:
 |--------|-------------|-----------------|-------------------|
 | **BadNets** | 4×4 pixel patch (visible) | Low–Medium | Fine-tuning |
 | **Blended** | Global semi-transparent overlay (α=0.1) | Medium | Pruning / NAD |
-| **Label-Consistent (LC)** | Semantic, no pixel modification | High / Stealthy | BAERASER / NAD |
+| **Label-Consistent (LC)** | Visible 4×4 patch + PGD-based feature suppression (label stays correct) | High / Stealthy | BAERASER / NAD |
 
 **Poison rates to test:** 1%, 5%, 10%
 **Target class:** Class 0 (Airplane) — fixed across all experiments
 **Model:** ResNet-18 only
+
+**Note on poison-rate framing:** for LC, poisoning is restricted to the target class only, so a nominal "10%" poison rate of the full 50k-image training set corresponds to ~100% of the target class's images. This is structurally different from BadNets/Blended, where the same "10%" is drawn from the non-target classes and represents a much smaller fraction of any single class. Poison-rate percentages are therefore not directly comparable across LC and BadNets/Blended without accounting for this.
 
 **Reviewer-safe sentence:**
 > "We select BadNets, Blended, and Label-Consistent attacks to represent increasing trigger subtlety and semantic realism, enabling systematic evaluation of severity-aware remediation regimes."
@@ -114,7 +116,7 @@ Attack Generation → Train Poisoned Model → Activation Clustering (Detection)
 
 ## Reproducibility Non-Negotiables
 
-- Global seed: `2025` — everywhere, no exceptions
+- Global seed: `2027` — everywhere, no exceptions
 - Shared `defense_indices.npy` — same 2,500 images (5% of 50k) for all defenses
 - Shared `poison_indices.npy` — same poison injection indices
 - Target class: `0` (airplane)

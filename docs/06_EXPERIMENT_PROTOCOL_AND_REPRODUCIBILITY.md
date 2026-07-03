@@ -21,7 +21,7 @@ Before running anything, these must be fixed and recorded:
 - **Attack type:** BadNets / Blended / Label-Consistent
 - **Poison rate:** Start with 5%, then add 1% and 10%
 - **Trigger size/strength:** small vs visible (document exact pixel/alpha values used)
-- **Random seed:** `2025` (write it down for every run; use 2-3 seeds for the final ablation table)
+- **Random seed:** `2027` (write it down for every run — a single fixed global seed, no multi-seed ablation)
 - **Model + dataset version:** ResNet-18 + CIFAR-10 (pin library versions in `requirements.txt`)
 
 ---
@@ -35,14 +35,14 @@ import torch
 import numpy as np
 import random
 
-def set_seed(seed=2025):
+def set_seed(seed=2027):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True  # crucial for reproducibility
 
-set_seed(2025)
+set_seed(2027)
 ```
 
 ### Step 2 — Shared Clean-Defense-Budget Indices (generate ONCE, share with whole team)
@@ -57,8 +57,12 @@ np.save('defense_indices.npy', defense_indices)
 - All team members use the **exact same 2,500 images** for fine-tuning/pruning/distillation defenses.
 - Store the file in a shared Drive folder; everyone loads from there, no regenerating locally.
 
-### Step 3 — Shared Poison Indices
-- Same principle: one person generates poison sample indices per attack/poison-rate combination, shares the `.npy` file, everyone uses the same poisoned subset.
+### Step 3 — Shared Poison Indices (Explicit Protocol)
+- **One canonical `.npy` file per (attack, rate) pair.** Generated once by whoever owns that attack, then promoted to the shared team Drive folder — never regenerated locally by other teammates, even if they think they're using the "same" seed/logic.
+- **Nest indices across rates within an attack where feasible:** the 5% poison-index set should be a subset of the 10% set, and 1% a subset of 5% (`10% ⊇ 5% ⊇ 1%`), so that increasing the poison rate doesn't introduce a disjoint population of poisoned images. This makes poison-rate sweeps cleaner to interpret.
+- **Naming:** `{attack}_poison_idx_{pct}pct.npy` (e.g. `badnets_poison_idx_10pct.npy`).
+- **Retroactive promotion for already-trained BadNets:** BadNets is already trained and should not be retrained. Its existing saved `badnets_poison_idx_{pct}pct.npy` files (per rate, from the BadNets notebook) should be promoted as-is to the shared folder as the official record for BadNets, rather than regenerated under the nested-nesting rule above. Document any deviation from the nesting property as a known limitation, not fixed retroactively.
+- **Blended and Label-Consistent generate their poison-index files fresh**, using the corrected, attack-appropriate pooling rule (non-target-class-only for Blended, target-class-only for LC — see `02_ATTACKS_AND_DATASETS.md`), following the nesting property above from the start.
 
 ### Step 4 — Clean Test Set
 - Use the **entire standard CIFAR-10 test set** (10,000 images), unshuffled or shuffled with the fixed seed only. This measures Clean Accuracy.
@@ -168,7 +172,7 @@ The controller should actively change its mitigation behavior across these tiers
 ## Reviewer Focus Areas (Don't Miss These)
 
 - **Reproducibility:** constant random seeds, matching configurations across team members
-- **Ablations:** sweeps across varying poison rates (1%, 5%, 10%) and at least 2-3 seeds
+- **Ablations:** sweeps across varying poison rates (1%, 5%, 10%) at a single fixed seed (`2027`)
 - **Clear reporting:** clean before/after comparison tables
 - **Honesty:** open evaluation of failure cases — don't hide them, they build credibility
 

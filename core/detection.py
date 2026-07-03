@@ -51,20 +51,49 @@ def extract_activations(model, dataloader, device):
     )
 
 
+# Per-attack dimensionality-reduction choice, decided and documented in
+# docs/05_DETECTION_AND_VERIFICATION.md. Do not leave this as an unstated
+# in-code default — update this dict (and the doc table) together whenever
+# an attack's DR ablation is settled. Values are (use_pca, pca_components).
+# `None` means "not yet decided — ablate ICA-10D vs PCA-2D before locking in".
+ATTACK_DR_CONFIG = {
+    "badnets": (True, 2),
+    "blended": None,   # TBD — see docs/05_DETECTION_AND_VERIFICATION.md
+    # Decided: LC uses the same visible 4x4 patch mechanism as BadNets (see
+    # docs/02_ATTACKS_AND_DATASETS.md's corrected LC description), so it's
+    # given the same PCA-2D treatment as BadNets rather than defaulting to
+    # ICA-10D. Revisit if Stage C silhouette/PDR data suggests otherwise.
+    "label_consistent": (True, 2),
+}
+
+
 def run_ac(X_all, y_pred_all, orig_idx_all, poison_idx,
-           target_class=0, seed=2025, use_pca=False, pca_components=2):
+           target_class=0, seed=2027, use_pca=False, pca_components=2):
     """
     Run Activation Clustering on target class.
 
-    Default (use_pca=False): ICA-10D detection — same as before,
-    your teammate's blended notebooks are unaffected.
-
+    Default (use_pca=False): ICA-10D detection.
     BadNets (use_pca=True, pca_components=2): PCA-2D detection —
     works better when the trigger creates strong variance in few directions.
 
+    The per-attack choice of use_pca/pca_components is tracked explicitly in
+    ATTACK_DR_CONFIG above and documented in
+    docs/05_DETECTION_AND_VERIFICATION.md — callers should look up the
+    attack's entry there rather than relying on this function's own
+    defaults, which only exist as a fallback.
+
     FIX 1: orig_idx tracked correctly via extract_activations fix.
-    FIX 2: suspicious_fraction uses poison_cluster size, not min cluster.
+    FIX 2: suspicious_fraction is label-free: min(cluster_sizes) / len(Xc),
+           computed independently of poison_c/poison_cluster. This is a
+           genuine detector output — a real deployment has no ground-truth
+           poison labels to decide which cluster is "the poison cluster."
+           PDR and recall remain ground-truth-based and are correctly
+           scoped as internal-only validation metrics, not detector output.
     FIX 3: poison_c cast to strict bool so ~poison_c never fails.
+    FIX 4: empty-cluster guard — c0/c1 no longer raise/NaN if either
+           K-Means cluster comes out empty (can happen at the 10%
+           Label-Consistent rate, where nearly the whole predicted-class
+           bucket is poisoned).
 
     Args:
         X_all:          (N, 512) activations
@@ -73,7 +102,7 @@ def run_ac(X_all, y_pred_all, orig_idx_all, poison_idx,
         poison_idx:     array of poisoned sample indices
         target_class:   class to analyze
         seed:           random seed
-        use_pca:        False = ICA (default, blended), True = PCA (BadNets)
+        use_pca:        False = ICA (default), True = PCA
         pca_components: number of PCA components when use_pca=True
 
     Returns: dict with silhouette, suspicious_fraction, PDR,
@@ -106,22 +135,31 @@ def run_ac(X_all, y_pred_all, orig_idx_all, poison_idx,
         method_label = "ICA-10D"
 
     # KMeans k=2
-    kmeans   = KMeans(n_clusters=2, n_init=20, random_state=seed)
+    # n_init standardized to 50 everywhere (was 20 here, 50 in notebooks) —
+    # pick one value and apply it consistently across function and notebooks.
+    kmeans   = KMeans(n_clusters=2, n_init=50, random_state=seed)
     clusters = kmeans.fit_predict(X_reduced)
 
-    # Identify poison cluster
-    c0 = poison_c[clusters == 0].mean()
-    c1 = poison_c[clusters == 1].mean()
+    # Identify poison cluster (ground-truth-based; used only for PDR/recall,
+    # NOT for suspicious_fraction — see FIX 2 below)
+    # FIX 4: empty-cluster guard, matches the LC notebook's version — avoids
+    # NaN/empty-slice errors if K-Means puts everything in one cluster.
+    c0 = poison_c[clusters == 0].mean() if (clusters == 0).any() else 0
+    c1 = poison_c[clusters == 1].mean() if (clusters == 1).any() else 0
     poison_cluster = 0 if c0 > c1 else 1
 
     PDR           = poison_c[clusters == poison_cluster].mean()
     recall        = poison_c[clusters == poison_cluster].sum() / poison_c.sum()
     sil           = silhouette_score(X_reduced, clusters)
-    cluster_sizes = np.bincount(clusters)
+    cluster_sizes = np.bincount(clusters, minlength=2)
 
-    # FIX 2: suspicious fraction = detected cluster size / total
-    # not min(cluster sizes) which was wrong when poison cluster is larger
-    susp_fraction = cluster_sizes[poison_cluster] / len(Xc)
+    # FIX 2: suspicious_fraction must be label-free — it's meant to be a
+    # detector output, computed with no access to ground-truth poison_idx.
+    # min(cluster_sizes) / len(Xc): the smaller cluster, as a fraction of
+    # the class, regardless of which cluster happens to actually be the
+    # poisoned one. Do NOT use poison_cluster/poison_c here — that's what
+    # PDR/recall are for, and those stay internal-only validation metrics.
+    susp_fraction = min(cluster_sizes) / len(Xc)
 
     print(f"Method:              {method_label}")
     print(f"Silhouette Score:    {sil:.4f}")
@@ -165,7 +203,7 @@ def plot_ac_results(ac_results, attack_name, poison_rate, save_path=None):
     if X_reduced.shape[1] == 2:
         Xp = X_reduced  # already 2D (PCA mode)
     else:
-        Xp = PCA(n_components=2, random_state=2025).fit_transform(X_reduced)
+        Xp = PCA(n_components=2, random_state=2027).fit_transform(X_reduced)
 
     title = (
         f"AC — {attack_name} {int(poison_rate*100)}%"
@@ -243,7 +281,7 @@ def run_strip(model, test_dataset_raw, clean_dataset,
 # (e.g., BadNets, Blended). Do not hardcode a specific attack here;
 # pass the appropriate trigger function from the caller.
                   
-    np.random.seed(2025)
+    np.random.seed(2027)
 
     non_target = [i for i in range(len(test_dataset_raw))
                   if test_dataset_raw[i][1] != target_class]

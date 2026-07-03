@@ -87,9 +87,9 @@
 ### 2. Attack Module
 - **BadNets:** Inject a 4×4 white pixel patch at bottom-right corner of target-class images. Simple, visually obvious.
 - **Blended:** Alpha-blend a fixed pattern (e.g., "Hello Kitty" image or noise pattern) at α=0.1. Semi-transparent, affects global appearance.
-- **Label-Consistent (LC):** Semantic trigger — no pixel modification. Achieve by generating adversarial perturbations on clean images so that they naturally cluster near a target class in representation space, but the label stays correct. Hardest to detect.
+- **Label-Consistent (LC):** Uses a visible patch trigger (same 4×4 patch mechanism as BadNets), applied on top of a PGD-based feature-suppression step. The PGD step perturbs target-class images to push them *away* from their own class's natural features (bounded by an l∞ constraint), which forces the model to rely on the patch to classify them correctly at train time. "Label-consistent" refers only to the fact that the label is never changed (poisoned images keep their true target-class label) — it does not mean the pixels are left unmodified. Hardest to detect precisely because it combines a visible-but-legitimately-labeled trigger with suppressed clean features.
 - **Output:** Poisoned dataset splits at 1%, 5%, 10% poison rates. Save as separate splits.
-- **Checkpoint naming:** `badnets_5pct_seed2025_poisoned_train.pth`
+- **Checkpoint naming:** `badnets_5pct_seed2027_poisoned_train.pth`
 
 ### 3. Model Training Module
 - **Architecture:** ResNet-18 only (fixed)
@@ -99,7 +99,8 @@
   - LR: 0.01, SGD with momentum 0.9, weight decay 1e-4
   - Batch size: 128
 - **Outputs:** Model checkpoints + activation `.npy` files from penultimate layer
-- **Critical:** Save clean baseline first (`resnet18_clean_seed2025.pth`), then per-attack poisoned checkpoints
+- **Critical:** Save clean baseline first (`resnet18_clean_seed2027.pth`), then per-attack poisoned checkpoints
+- **LC-specific artifact — clean source model:** Label-Consistent poison crafting (PGD feature suppression) requires its own clean-trained "source" model to generate the perturbations against. This is a separate checkpoint from the canonical clean baseline used elsewhere in the pipeline (e.g. for AC/STRIP comparisons) — it exists purely to craft the LC poison and is not used for any downstream evaluation. This is now resolved: it is saved as `resnet18_clean_source_seed2027.pth`, distinct from the canonical clean baseline `resnet18_clean_seed2027.pth` — do not conflate the two or reuse one in place of the other.
 
 ### 4. Detection Module — Activation Clustering (AC)
 - **Input:** Penultimate-layer activations per class (extracted from poisoned model on training data)
@@ -174,16 +175,20 @@
 │   ├── models.py                    ← ResNet-18 definition (single source)
 │   ├── data_utils.py                ← get_poisoned_loader(), get_clean_subset()
 │   ├── metrics.py                   ← calculate_asr(), calculate_ca() — single impl
-│   └── seed_utils.py                ← set_seed(2025)
+│   └── seed_utils.py                ← set_seed(2027)
 │
 ├── attacks/
 │   ├── badnets.py
 │   ├── blended.py
 │   └── label_consistent.py
 │
-├── detection/
-│   ├── ac_detect.py                 ← Activation Clustering + severity score
-│   └── strip.py                     ← STRIP entropy evaluation
+├── core/
+│   └── detection.py                 ← SINGLE merged module: Activation Clustering
+│                                       (extract_activations / run_ac / plot_ac_results)
+│                                       AND STRIP (run_strip / plot_strip_results).
+│                                       This replaces the separate detection/ac_detect.py
+│                                       and detection/strip.py files shown below —
+│                                       everyone should import from here, not reimplement.
 │
 ├── controller/
 │   └── controller.py                ← Adaptive decision logic + threshold config
@@ -195,7 +200,9 @@
 │   └── baeraser_lite.py
 │
 ├── verification/
-│   ├── strip_verify.py
+│   ├── strip_verify.py              ← Thin wrapper: imports and calls run_strip()
+│   │                                   from core/detection.py; does not reimplement
+│   │                                   STRIP logic locally.
 │   └── gradcam.py                   ← Grad-CAM + TAR computation
 │
 ├── deployment/

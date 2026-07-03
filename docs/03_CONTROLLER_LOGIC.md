@@ -81,14 +81,14 @@ This is the more publishable version developed in Set 2 of the project docs, and
 
 - **AC high + STRIP low-entropy (locked):** Full backdoor compromise — both diagnostics fire → heavy unlearning (BAERASER) required.
 - **AC high + STRIP high-entropy:** Structurally embedded but not yet behaviorally dominant — neuron pruning targeting the malicious activation zones is sufficient.
-- **AC low + STRIP low-entropy:** AC missed it (stealthy trigger), but STRIP caught the behavioral lock-in. This is the predicted Label-Consistent/stealthy-Blended case. Needs NAD/distillation — a behavioral, representation-agnostic fix — because pruning doesn't know which neurons to target if AC never found them.
+- **AC low + STRIP low-entropy:** AC missed it (stealthy trigger), but STRIP caught the behavioral lock-in. Needs NAD/distillation — a behavioral, representation-agnostic fix — because pruning doesn't know which neurons to target if AC never found them. Which attack(s) actually land here is an open empirical question, not a pre-committed assumption — see the note below.
 - **AC low + STRIP high-entropy:** Either a genuinely clean model or very weak poisoning — fine-tune lightly or flag as clean.
 
 ---
 
 ## IMPORTANT: This 4th Quadrant Must Be *Earned*, Not Assumed
 
-Adding NAD as a fourth defense is only justified if your experiments **actually produce** the AC-low/STRIP-low-entropy quadrant. This was an open question at the end of the prior experiment round (Set 2) — the Label-Consistent attack was flagged as the most likely candidate to land there, but it was never confirmed with the (now-discarded) experimental results.
+Adding NAD as a fourth defense is only justified if your experiments **actually produce** the AC-low/STRIP-low-entropy quadrant. This is an open question, not an assumption. Label-Consistent was previously flagged as the most likely candidate for this quadrant, but that framing pre-dated a correction to LC's mechanism: LC's PGD step forces the model to rely heavily on a fixed, visible patch (the same patch type BadNets uses), which could plausibly make LC's activations *more* separable in representation space, not less — the opposite of what the "AC-low" prediction assumes. Do not pre-commit to the 4th-quadrant narrative or to LC being the quadrant's occupant; decide purely from the actual Stage C AC/STRIP data.
 
 **Action item for the redo:**
 1. Run AC + STRIP on all three attacks × all three poison rates
