@@ -250,68 +250,147 @@ def plot_ac_results(ac_results, attack_name, poison_rate, save_path=None):
 
 
 # ── STRIP Detection ───────────────────────────────────────────────────────────
+# ── STRIP Detection (corrected + batched) ──────────────────────────────────
 import scipy.stats
 
 
-def strip_entropy_single(model, test_img_tensor, clean_dataset,
-                          device, n_superimpose=100):
-    model.eval()
-    indices = np.random.choice(len(clean_dataset), n_superimpose, replace=False)
-    entropies = []
+def strip_entropy_single(model, img_raw, clean_dataset_raw, device, transform,
+                          alpha=0.5, n_superimpose=100, batch_size=100):
+    """
+    STRIP perturbation + entropy computation for ONE incoming image.
 
+    FIX (correctness, critical): blending is done in RAW pixel space — a
+    weighted blend equivalent to cv2.addWeighted(img, alpha, clean, 1-alpha, 0),
+    matching the paper (Sec. III, footnote 2) — NOT a sum of already-CIFAR-
+    normalized tensors followed by .clamp(0,1), which crushed most pixels
+    to 0/1 and destroyed image content. `transform` is applied once, after
+    the raw blend.
+
+    FIX (performance): all `n_superimpose` perturbed replicas are now built
+    into a single batch tensor and pushed through the model in one (or a
+    few chunked) forward pass, instead of one `model(...)` call per
+    replica. This is the same "N separated model replicas run in parallel"
+    optimization the paper itself calls out (Sec. V-D) as the way to avoid
+    STRIP's per-input overhead — we do it as batched inference rather than
+    literal parallel replicas, which is the standard GPU equivalent.
+
+    Args:
+        img_raw:            raw incoming image (PIL Image or HxWxC array,
+                             [0,255] or [0,1]) — already trigger-stamped
+                             upstream if applicable. Must be unnormalized.
+        clean_dataset_raw:  held-out dataset returning RAW (unnormalized)
+                             images, used to draw perturbation patterns.
+        transform:          ToTensor + CIFAR-10 Normalize pipeline.
+        alpha:              blend weight for the incoming image (drawn
+                             clean image gets 1-alpha). Paper doesn't fix a
+                             value; 0.5 is the standard re-implementation
+                             default — document if kept.
+        n_superimpose:      N in the paper (number of perturbed replicas).
+        batch_size:         max replicas per forward pass. Chunk to this
+                             size to bound GPU memory; with n_superimpose<=
+                             batch_size this collapses to a single pass.
+    """
+    model.eval()
+
+    img_arr = np.array(img_raw).astype(np.float32)
+    if img_arr.max() > 1.0:
+        img_arr = img_arr / 255.0
+
+    indices = np.random.choice(len(clean_dataset_raw), n_superimpose, replace=False)
+
+    # Build all N blended replicas as raw arrays first, then transform once.
+    blended_tensors = []
+    for idx in indices:
+        clean_raw, _ = clean_dataset_raw[idx]
+        clean_arr = np.array(clean_raw).astype(np.float32)
+        if clean_arr.max() > 1.0:
+            clean_arr = clean_arr / 255.0
+
+        blended_arr = np.clip(alpha * img_arr + (1 - alpha) * clean_arr, 0, 1)
+        blended_img = TF.to_pil_image((blended_arr * 255).astype(np.uint8))
+        blended_tensors.append(transform(blended_img))
+
+    batch = torch.stack(blended_tensors, dim=0)  # (n_superimpose, C, H, W)
+
+    entropies = []
     with torch.no_grad():
-        for idx in indices:
-            clean_img, _ = clean_dataset[idx]
-            blended = test_img_tensor + clean_img
-            blended = blended.clamp(0, 1)
-            blended = blended.unsqueeze(0).to(device)
-            logits  = model(blended)
-            probs   = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
-            entropy = -np.sum(probs * np.log2(probs + 1e-8))
-            entropies.append(entropy)
+        for start in range(0, batch.size(0), batch_size):
+            chunk = batch[start:start + batch_size].to(device)
+            logits = model(chunk)
+            probs  = torch.softmax(logits, dim=1).cpu().numpy()
+            ent    = -np.sum(probs * np.log2(probs + 1e-8), axis=1)  # per-sample
+            entropies.extend(ent.tolist())
 
     return float(np.mean(entropies))
 
 
-def run_strip(model, test_dataset_raw, clean_dataset,
+def run_strip(model, test_dataset_raw, clean_dataset_raw,
               device, transform, target_class, trigger_fn,
-              n_samples=500, n_superimpose=100,
-              frr=0.01):
-# Attack-agnostic STRIP: `trigger_fn(img)` applies the chosen trigger
-# (e.g., BadNets, Blended). Do not hardcode a specific attack here;
-# pass the appropriate trigger function from the caller.
-                  
-    np.random.seed(2027)
+              asr_test_idx, n_samples=200, n_superimpose=50,
+              frr=0.01, alpha=0.5, seed=2027, batch_size=100):
+    """
+    Attack-agnostic STRIP: `trigger_fn(img)` applies the chosen trigger
+    IN RAW PIXEL SPACE. Do not hardcode a specific attack here.
 
-    non_target = [i for i in range(len(test_dataset_raw))
-                  if test_dataset_raw[i][1] != target_class]
-    triggered_idxs = np.random.choice(
-        non_target, n_samples // 2, replace=False
-    )
-    clean_idxs = np.random.choice(
-        len(test_dataset_raw), n_samples // 2, replace=False
-    )
+    FIX (reproducibility, doc 06): triggered samples drawn from the shared
+    `asr_test_idx` (Cell 4) instead of local random sampling, so STRIP TPR
+    is directly comparable to ASR (same 1,000-image pool).
+
+    FIX (performance): inner n_superimpose loop is batched (see
+    strip_entropy_single) instead of one unbatched forward pass per
+    replica — cuts wall-clock roughly by a factor close to batch_size,
+    since each sample now costs ~ceil(n_superimpose/batch_size) forward
+    passes instead of n_superimpose.
+
+    Defaults REDUCED per the noted cost concern: at the old defaults
+    (n_samples=500, n_superimpose=100) across ~6 checkpoints this was
+    ~300,000 unbatched passes — noticeably slower than a training epoch.
+    New defaults (n_samples=200, n_superimpose=50) are meant for a FIRST
+    PASS across all conditions to see which (attack, poison_rate,
+    checkpoint) combinations are actually interesting; scale n_samples up
+    toward the paper's 2000+2000 validation scale (doc still recommends
+    >=500-1000 clean for a stable normal-fit threshold) only for those.
+
+    Args:
+        ...same as before...
+        batch_size: forwarded to strip_entropy_single; raise if GPU memory
+                    allows for faster runs, lower if you hit OOM.
+    """
+    rng = np.random.RandomState(seed)
+
+    n_triggered = min(n_samples // 2, len(asr_test_idx))
+    if n_triggered < n_samples // 2:
+        print(f"Note: requested {n_samples // 2} triggered samples but "
+              f"asr_test_idx has only {len(asr_test_idx)}; using all of it.")
+    triggered_idxs = rng.choice(asr_test_idx, n_triggered, replace=False)
+    clean_idxs     = rng.choice(len(test_dataset_raw), n_samples // 2, replace=False)
 
     entropies = []
     labels_gt = []
 
-    print("Running STRIP on triggered samples...")
+    print(f"Running STRIP on {len(triggered_idxs)} triggered samples "
+          f"(from shared asr_test_idx, batched inner loop)...")
     for idx in tqdm(triggered_idxs):
-        img_np, _ = test_dataset_raw[idx]
-        img_np    = np.array(img_np)
-        img_trig  = trigger_fn(img_np)
-        img_t     = transform(TF.to_pil_image(img_trig))
+        img_raw, gt_label = test_dataset_raw[idx]
+        assert gt_label != target_class, (
+            f"asr_test_idx contains a target-class sample at index {idx} — "
+            f"asr_test_idx must be non-target-class only per doc 06."
+        )
+        img_np   = np.array(img_raw)
+        img_trig = trigger_fn(img_np)
         ent = strip_entropy_single(
-            model, img_t, clean_dataset, device, n_superimpose
+            model, img_trig, clean_dataset_raw, device, transform,
+            alpha=alpha, n_superimpose=n_superimpose, batch_size=batch_size
         )
         entropies.append(ent)
         labels_gt.append(1)
 
-    print("Running STRIP on clean samples...")
+    print(f"Running STRIP on {len(clean_idxs)} clean samples...")
     for idx in tqdm(clean_idxs):
-        img_t, _ = clean_dataset[idx]
+        img_raw, _ = test_dataset_raw[idx]
         ent = strip_entropy_single(
-            model, img_t, clean_dataset, device, n_superimpose
+            model, img_raw, clean_dataset_raw, device, transform,
+            alpha=alpha, n_superimpose=n_superimpose, batch_size=batch_size
         )
         entropies.append(ent)
         labels_gt.append(0)
@@ -347,7 +426,6 @@ def run_strip(model, test_dataset_raw, clean_dataset,
         "FPR":        round(float(fpr * 100), 2),
         "flagged":    flagged,
     }
-
 
 def plot_strip_results(strip_results, attack_name, poison_rate, save_path=None):
     entropies = strip_results["entropies"]
