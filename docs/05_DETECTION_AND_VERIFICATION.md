@@ -59,7 +59,7 @@ Doc and code have drifted: this doc previously said PCA with 10–50 components 
 | Attack | DR method | Components | Reasoning |
 |--------|-----------|------------|-----------|
 | BadNets | PCA | 2 | Hard, fixed-location patch → strong variance in few directions |
-| Blended | *(still TBD — see Stage C ablation results below)* | — | Global low-amplitude blend — variance likely spread across more directions; ablation data now exists (`blended_dr_comparison.csv`), decision not yet locked |
+| Blended | *(still TBD — see Stage C ablation results below)* | — | Global low-amplitude blend — variance likely spread across more directions; both the main (pr01/pr05/pr10) and low-count ablations now exist, but the decision is still intentionally open. The low-count sweep adds another wrinkle: ICA-10D silhouette is even noisier at low n (~0.13–0.28, non-monotonic), so neither ablation alone settles the PCA-2D vs ICA-10D choice |
 | Label-Consistent | PCA | 2 | Decided: LC uses the same visible 4×4 patch mechanism as BadNets (see `02_ATTACKS_AND_DATASETS.md`), so treated the same way. Revisit if Stage C data (silhouette/PDR) suggests otherwise — this was previously silently drifted to PCA-2D without being a deliberate, documented choice; it now is one. |
 
 **Blended DR ablation data (run, not yet decided — see `10_BLENDED_STAGE_C_STATUS.md`):**
@@ -77,6 +77,13 @@ PCA-2D gives cleaner monotonic silhouette growth with poison rate but weaker
 PDR at pr01; ICA-10D gives much better PDR at pr01 but a less clean silhouette
 trend. Not resolved here on purpose — pick one and document the reasoning
 before this feeds controller calibration (Stage D).
+
+### What AC does NOT output
+
+#### AC severity floor at low poison counts
+- **Do not interpret `suspicious_fraction` or PCA-2D silhouette as severity-proportional below roughly n≈25 poisoned samples.** Across n=1→250, PCA-2D silhouette stays in a narrow 0.36–0.46 band while `suspicious_fraction` remains ~20–32%, indicating a baseline class sub-structure rather than poison-driven separation.
+- `PDR` (internal-only) is the only metric in this regime that tracks poison count at all, and even it increases only from 0.10% to 6.94% through n=250.
+- This low-count ablation should feed the controller calibration: do **not** calibrate τ1/τ2 against low-count silhouette values expecting them to track poison severity.
 
 ### What AC does NOT output
 - ❌ Attack identity (BadNets vs Blended vs LC)
@@ -214,7 +221,22 @@ Produces class-activation heatmaps showing which image regions the model relies 
 - Pick a small set of test images (clean + triggered) per attack/poison-rate combination
 - Generate Grad-CAM heatmaps pre- and post-defense
 - For BadNets and Label-Consistent, the trigger location is known (both use the same fixed 4×4 patch position) — directly compute TAR as the fraction of heatmap energy inside the patch bounding box for both attacks
-- For Blended, TAR is harder to define precisely since there's no fixed patch location — consider reporting qualitative comparisons only, or defining TAR relative to the blend mask if available
+- For Blended, use **attention correlation** as the TAR-equivalent metric: compute the Pearson correlation (r) between Grad-CAM heatmaps for the clean and triggered versions of the same image. Because Blended has no fixed trigger location, correlation provides a location-free measure of attention stability. Lower correlation indicates larger attention shift and stronger shortcut reliance.
+
+| tag | n/rate | mean attention correlation (r) |
+|---|---:|---:|
+| n0001 | 1 | 0.878 |
+| n0002 | 2 | 0.911 |
+| n0005 | 5 | 0.873 |
+| n0010 | 10 | 0.825 |
+| n0015 | 15 | 0.850 |
+| n0025 | 25 | 0.710 |
+| n0250 | 250 | 0.728 |
+| pr01 | 500 | 0.803 |
+| pr05 | 2500 | 0.725 |
+| pr10 | 5000 | 0.609 |
+
+Broadly, attention correlation decreases as poison count/rate increases (allowing for small-n noise). The pr10 checkpoint has the **lowest** correlation, confirming the model's attention is strongly hijacked even though STRIP fails to detect it; this corroborates that the STRIP result is a behavioral detection failure rather than an absence of a backdoor.
 
 ---
 
