@@ -148,10 +148,10 @@ fact until it's tested directly (§4, item 1).
 ### Low-count / sub-1% arm (Section G/H/I)
 | File | Contents | Status |
 |---|---|---|
-| `resnet18_blended_n{0001..0025}.pth` | Sub-1% poison-count checkpoints | ⬜ not re-confirmed this pass |
-| `blended_lowrate_results.csv` / `blended_lowrate_results_01_alphatest.csv` | ASR at α_test=0.5 / 0.1 respectively | ⬜ |
-| `blended_lowrate_ac_results.csv` | AC severity vs poison count | ⬜ (referenced in notebook, not inspected here) |
-| `blended_lowrate_strip_results.csv` + `_entropies_/_labels_{tag}.npy` | STRIP vs poison count | ⬜ |
+| `resnet18_blended_n{0001..0025}.pth` | Sub-1% poison-count checkpoints | ✅ (includes n0250) |
+| `blended_lowrate_results.csv` / `blended_lowrate_results_01_alphatest.csv` | ASR at α_test=0.5 / 0.1 respectively | ✅ |
+| `blended_lowrate_ac_results.csv` | AC severity vs poison count | ✅ |
+| `blended_lowrate_strip_results.csv` + `_entropies_/_labels_{tag}.npy` | STRIP vs poison count | ✅ |
 
 **If you're picking this up next:** the low-rate arm wasn't part of this
 investigation — don't assume it's stale, just re-check its outputs before
@@ -187,7 +187,44 @@ citing numbers from it, the same way we just did for the main sweep.
 
 ---
 
-## 4. Optional follow-up (not required for doc-of-record, do only if time allows)
+
+
+## 5. Low-Count Sweep Findings
+
+### ASR vs poison count (α_test=0.1)
+
+| n_poison |1|2|5|10|15|25|250|
+|---|---:|---:|---:|---:|---:|---:|---:|
+|ASR|0.3%|0.6%|0.9%|1.8%|5.5%|49.3%|100.0%|
+
+### STRIP TPR
+
+| n_poison |1–25|250|
+|---|---:|---:|
+|TPR|0.0% (all six)|94.4%|
+
+This shows a clear phase transition: the backdoor does not become behaviorally established until between n=25 and n=250, and STRIP detection activates at the same point, supporting STRIP as a behavioral verifier.
+
+**AC caution.** PCA-2D silhouette remains ~0.36–0.46 from n=1 through n=250, suspicious_fraction stays ~20–32%, and PDR only rises from 0.10% to 6.94%, while recall is near-100% almost everywhere. At low poison counts AC is finding an existing class-0 substructure that happens to contain the few poisoned samples, rather than a poison-driven cluster. Therefore AC severity is effectively decoupled from poison count in this regime. Do not calibrate controller thresholds τ1/τ2 using low-count silhouette values expecting them to track attack severity.
+
+## 6. Grad-CAM
+
+|tag|n/rate|mean attention correlation|
+|---|---:|---:|
+|n0001|1|0.878|
+|n0002|2|0.911|
+|n0005|5|0.873|
+|n0010|10|0.825|
+|n0015|15|0.850|
+|n0025|25|0.710|
+|n0250|250|0.728|
+|pr01|500|0.803|
+|pr05|2500|0.725|
+|pr10|5000|0.609|
+
+Lower correlation indicates greater clean↔triggered attention shift and stronger shortcut reliance. The overall trend decreases with poison count/rate (allowing for small-n noise). pr10 exhibits the lowest correlation, corroborating that the backdoor strongly hijacks attention even though STRIP fails to detect it there; the failure is specific to STRIP's entropy test rather than absence of the backdoor.
+
+## 7. Optional follow-up (not required for doc-of-record, do only if time allows)
 
 Per doc04's Scope Discipline and doc08's "if time permits" framing, these are
 **not** blockers for Stage C/D and should not delay moving on to LC/BadNets:
