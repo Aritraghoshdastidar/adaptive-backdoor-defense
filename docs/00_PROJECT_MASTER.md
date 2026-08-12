@@ -145,3 +145,9 @@ Attack Generation → Train Poisoned Model → Activation Clustering (Detection)
 
 Alternative:
 > **"Model Safety Scanner: A Cost-Aware, Severity-Calibrated Pipeline for Automated Backdoor Detection and Remediation"**
+
+## for paper
+Are our rates meaningful? Yes, but frame them honestly:
+
+1% is realistic-ish and literature-standard, especially for your clean-label attack — it directly matches Silent Killer's own reported setting.
+5% and 10% are stress-test / high-severity conditions, not realistic deployment scenarios — useful for your project because they let you show how detection/defense scales as severity increases, which is exactly your paper's "severity regime" framing. Just don't claim 10% represents a plausible real-world attack; frame it as "worst-case / upper-bound severity" in the write-up, with 1% as your realistic anchor point.
