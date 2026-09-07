@@ -57,7 +57,7 @@ def extract_activations(model, dataloader, device):
 # an attack's DR ablation is settled. Values are (use_pca, pca_components).
 # `None` means "not yet decided — ablate ICA-10D vs PCA-2D before locking in".
 ATTACK_DR_CONFIG = {
-    "badnets": (True, 2),
+    "badnets": (False, 10),
     "blended": None,   # TBD — see docs/05_DETECTION_AND_VERIFICATION.md
     # Decided: LC uses the same visible 4x4 patch mechanism as BadNets (see
     # docs/02_ATTACKS_AND_DATASETS.md's corrected LC description), so it's
@@ -73,8 +73,7 @@ def run_ac(X_all, y_pred_all, orig_idx_all, poison_idx,
     Run Activation Clustering on target class.
 
     Default (use_pca=False): ICA-10D detection.
-    BadNets (use_pca=True, pca_components=2): PCA-2D detection —
-    works better when the trigger creates strong variance in few directions.
+    
 
     The per-attack choice of use_pca/pca_components is tracked explicitly in
     ATTACK_DR_CONFIG above and documented in
