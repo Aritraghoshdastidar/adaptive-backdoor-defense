@@ -306,7 +306,7 @@ def strip_entropy_single(model, img_raw, clean_dataset_raw, device, transform,
 
         # Paper's formula: img + clean, clipped (NOT alpha-weighted blend)
         # cv2.addWeighted(bg, 1, overlay, 1, 0) = bg*1 + overlay*1, clip [0,255]
-        blended_arr = np.clip(img_arr + clean_arr, 0, 1)
+        blended_arr = np.clip((img_arr + clean_arr) / 2.0, 0, 1)
         blended_img = TF.to_pil_image((blended_arr * 255).astype(np.uint8))
         blended_tensors.append(transform(blended_img))
 
