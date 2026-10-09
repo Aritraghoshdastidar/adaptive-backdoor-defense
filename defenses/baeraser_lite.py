@@ -24,7 +24,8 @@ WHAT CHANGED IN THIS VERSION AND WHY:
      editing magic numbers inline — update this dict (and document why in
      04_DEFENSE_METHODS.md) so the choice is auditable.
 
-  3. Warm-starting: recovery for a given attack's 2nd/3rd poison
+  3. (SUPERSEDED by v3 item 8e: warm-starting/chaining is now OFF by default.)
+     Warm-starting: recovery for a given attack's 2nd/3rd poison
      rate/count can initialize the Generator from the previous rate's
      converged weights instead of random init (`warm_start_state`). Same
      trigger family, different checkpoint — this cuts convergence time
@@ -47,6 +48,67 @@ WHAT CHANGED IN THIS VERSION AND WHY:
   6. BlendedTriggerOperator.alpha is now a REQUIRED constructor argument
      (no more silently-mismatched default of 0.15) — pass the exact
      alpha_train used to generate the Blended checkpoint you're defending.
+
+  7. v2 FIXES (review of the executed Blended notebook):
+       a. MODEL SELECTION NO LONGER TOUCHES TEST DATA. v1 chose the best epoch, the
+          early-stop epoch and the CA floor from test-set CA and test-set ASR, then
+          reported those same numbers (a min over <=15 epochs on the reporting set).
+          Pass `select_loader` (a held-out slice of the defense budget; see
+          make_select_split). Selection then uses held-out clean CA and a PROXY ASR
+          (recovered triggers on held-out non-target images); test loaders are
+          monitoring-only. Without select_loader the old leaky path still runs but
+          warns and tags the result selection_source="test_monitor (LEAKY)".
+       b. "exact ASR" excludes target-class images (v1 counted them as successes).
+       c. Candidate acceptance can use a held-out split (`heldout_loader`) instead of
+          the images the generator was trained on.
+       d. Reported unlearning cost excludes test-set monitoring (v1 included it).
+       e. Fine-phase seeds no longer repeat the coarse-phase seeds.
+       f. Optional `freeze_bn` (default False): see baeraser_unlearning.
+
+  8. v3 FIXES (review of the v2 files; items marked [protocol] also need notebook changes):
+       a. NO ORACLE SELECTION. The checkpoint is chosen only from defender-computable
+          signals: held-out clean CA (floor) + proxy ASR on the recovered triggers,
+          with ties inside `asr_tie_tol` broken by held-out CA. Optional
+          `fresh_select_k>1` re-ranks the top-k epochs by the ASR of FRESHLY recovered
+          triggers on that epoch's sanitized weights (harder to game than a proxy
+          the model was trained against). Early stopping is OFF by default
+          (`asr_stop_threshold=None`): all epochs run, real ASR is logged next to proxy
+          ASR, and the real ASR AT THE SELECTED EPOCH is the headline number. The
+          epoch with the best real ASR is reported separately as `oracle_*`
+          (upper bound, never a result). select_loader is now REQUIRED unless
+          allow_leaky_selection=True.
+       b. [protocol] Held-out split. The poisoned checkpoints saw all 50k train images,
+          so any defense slice drawn from train overlaps by construction.
+          `split_test_set` gives a stratified val/report split of the CIFAR TEST set
+          (default 2,500 / 7,500): build the defense budget AND select slice from the
+          val half; the ASR set and CA monitor must use the report half only.
+          Re-run FT / ANP / NAD on the same split.
+       c. [protocol] `assert_baseline_ca` checks a loaded checkpoint reproduces its
+          recorded CA (normalisation constants are not stored in a checkpoint).
+          Run it on the FULL test loader before switching to the report half.
+       d. Target-class images are excluded from the recovery hinge and from the
+          triggered batches in unlearning (`exclude_target=True`).
+          `trigger_loss_mode="true_label"` (minimise CE of triggered->TRUE label) is
+          kept as an ablation; `trigger_ascent_cap` optionally bounds the ascent term.
+       e. Recovery no longer chains generator/MINE state between epsilons. Every
+          epsilon starts from a fresh random init (`chain_epsilons=False`); a
+          caller-supplied warm_start_state, if any, is applied identically to every
+          epsilon. Init/final weight hashes are logged per candidate and checked
+          (`recovery_meta["fresh_init_verified"]`). Warm-starting stays OFF in the
+          main matrix. final_*_state are only returned with return_states=True.
+       f. Clean-model control + generality checks: run the identical pipeline on a
+          CLEAN model, compare with `summarize_result`; `fresh_recovery_audit`
+          (fresh triggers on the sanitized model) and `universal_adv_vulnerability`
+          (fresh L_inf universal perturbation) show whether the gain is specific to
+          the backdoor or generic adversarial robustness.
+       g. `baeraser_lite(inplace=False)` copies the victim (the original is kept for
+          before/after audits); the returned model has the SELECTED weights loaded
+          (v2 returned last-epoch weights; callers had to load best_state_dict).
+          Reported cost now includes recovery + selection audits, not only unlearning.
+       h. Removed the dead `ma_et` bookkeeping in MINE (it forced a GPU sync per step).
+       i. Fine-tune the defender also gets the blend family and alpha: disclose this.
+          Use `BlendedTriggerOperator(alpha=...)` with a MISMATCHED alpha as an
+          additional robustness test.
 
 IMPORTANT (unchanged):
   - This is the project's BAERASER-lite adaptation, not a claim of exact
@@ -77,7 +139,10 @@ Expected input images inside the defense loaders:
 Recovered trigger tensors are stored in RAW [0,1] RGB space.
 """
 
+import copy
 import gc
+import hashlib
+import math
 import time
 import warnings
 from dataclasses import dataclass
@@ -88,6 +153,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.data import DataLoader, Subset
 
 
 # ---------------------------------------------------------------------------
@@ -378,8 +444,6 @@ class BaEraserMINE(nn.Module):
         self.fc1_bias = nn.Parameter(torch.zeros(hidden_size))
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, 1)
-        self.ma_et = None
-        self.ma_rate = 0.001
 
     def forward(self, x, y):
         h = self.fc1_x(x) + self.fc1_y(y) + self.fc1_bias
@@ -390,13 +454,122 @@ class BaEraserMINE(nn.Module):
     def mi(self, x, y, x_prime):
         t_joint = self.forward(x, y).mean()
         t_marginal = self.forward(x_prime, y)
-        exp_t = torch.exp(t_marginal)
-        current = exp_t.mean().detach().item()
-        if self.ma_et is None:
-            self.ma_et = current
-        else:
-            self.ma_et = (1-self.ma_rate)*self.ma_et + self.ma_rate*current
-        return t_joint - torch.log(exp_t.mean() + 1e-8)
+        return t_joint - torch.log(torch.exp(t_marginal).mean() + 1e-8)
+
+
+# ---------------------------------------------------------------------------
+# Defender-side selection helpers (no test data) ---------------------------
+# ---------------------------------------------------------------------------
+
+def make_select_split(dataset, n_select=500, batch_size=128, seed=SEED, num_workers=0):
+    """Split the defense budget into (train_loader, select_loader).
+
+    Same total budget (e.g. 2,000 + 500 = 2,500); the selection slice is used ONLY
+    for choosing epochs / accepting triggers. Use the same split for every defense
+    you compare so they get identical information.
+    """
+    g = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(len(dataset), generator=g).tolist()
+    sel_idx, tr_idx = perm[:n_select], perm[n_select:]
+    train_loader = DataLoader(Subset(dataset, tr_idx), batch_size=batch_size, shuffle=True,
+                              num_workers=num_workers,
+                              generator=torch.Generator().manual_seed(seed))
+    select_loader = DataLoader(Subset(dataset, sel_idx), batch_size=batch_size, shuffle=False,
+                               num_workers=num_workers)
+    return train_loader, select_loader
+
+
+@torch.no_grad()
+def _clean_acc(model, loader, device):
+    model.eval()
+    correct = total = 0
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        correct += (model(x).argmax(1) == y).sum().item()
+        total += y.size(0)
+    return correct / max(total, 1)
+
+
+@torch.no_grad()
+def _proxy_asr(model, loader, trigger_pool, operator, target_label, device):
+    """Worst-case (max over pool) target-hit rate of the RECOVERED triggers on
+    held-out NON-target defense images. Defender-computable stand-in for ASR.
+    Caveat: the model is trained against these triggers, so this proxy can reach ~0
+    even if the real trigger still works; always check real ASR as a diagnostic."""
+    model.eval()
+    per_trigger = []
+    for entry in trigger_pool:
+        trig = entry["tensor"].to(device)
+        hit = tot = 0
+        for imgs, lbls in loader:
+            imgs, lbls = imgs.to(device), lbls.to(device)
+            keep = lbls != target_label
+            if keep.sum().item() == 0:
+                continue
+            out = operator.apply(imgs[keep], trig)
+            hit += (model(out).argmax(1) == target_label).sum().item()
+            tot += int(keep.sum().item())
+        per_trigger.append(hit / max(tot, 1))
+    return max(per_trigger) if per_trigger else 1.0
+
+
+def state_hash(model_or_state):
+    """Stable fingerprint of weights + buffers (16 hex chars)."""
+    sd = model_or_state.state_dict() if hasattr(model_or_state, "state_dict") else model_or_state
+    h = hashlib.sha256()
+    for k, v in sorted(sd.items()):
+        h.update(k.encode())
+        h.update(v.detach().cpu().contiguous().numpy().tobytes())
+    return h.hexdigest()[:16]
+
+
+def split_test_set(dataset, n_val=2500, seed=SEED):
+    """Stratified, disjoint split of the CIFAR TEST set -> (val_idx, report_idx).
+
+    WHY: the poisoned checkpoints were trained on all 50k training images, so a defense
+    budget drawn from train overlaps with what the model memorised. Drawing it from the
+    test set's `val_idx` half (and reporting only on `report_idx`) is the cheap fix.
+    Build the defense budget AND the select slice from Subset(test, val_idx); build the
+    ASR set and the CA monitor from Subset(test, report_idx). Use the same split for
+    every defense (FT, ANP, NAD, BaEraser)."""
+    labels = getattr(dataset, "targets", None)
+    if labels is None:
+        labels = [int(dataset[i][1]) for i in range(len(dataset))]
+    labels = np.asarray(labels)
+    rng = np.random.RandomState(seed)
+    val_idx = []
+    for c in np.unique(labels):
+        idx = np.where(labels == c)[0]
+        rng.shuffle(idx)
+        val_idx.extend(idx[: int(round(n_val * len(idx) / len(labels)))].tolist())
+    val_idx = sorted(val_idx)
+    vs = set(val_idx)
+    report_idx = [i for i in range(len(labels)) if i not in vs]
+    assert_disjoint(val_idx, report_idx, "val", "report")
+    return val_idx, report_idx
+
+
+def assert_disjoint(idx_a, idx_b, name_a="A", name_b="B"):
+    """Raise if two index collections share any element."""
+    inter = set(map(int, idx_a)) & set(map(int, idx_b))
+    if inter:
+        raise AssertionError(f"{name_a} and {name_b} overlap on {len(inter)} indices")
+
+
+def assert_baseline_ca(model, loader, expected_ca, tol=0.001, device=DEVICE, name="model"):
+    """Check a loaded checkpoint reproduces its recorded clean accuracy.
+
+    A checkpoint does not carry its normalisation constants, so this is the real test
+    that CIFAR_MEAN/CIFAR_STD match the ones used in training. Run it on the FULL test
+    loader (the recorded baselines were measured on 10k images). `expected_ca` in [0,1],
+    e.g. 0.9483. Default tolerance 0.1 pp."""
+    ca = _clean_acc(model, loader, device)
+    if abs(ca - expected_ca) > tol:
+        raise AssertionError(
+            f"{name}: CA {ca*100:.2f}% != recorded {expected_ca*100:.2f}% "
+            f"(tol {tol*100:.2f}pp) -> normalisation / checkpoint mismatch."
+        )
+    return ca
 
 
 # ---------------------------------------------------------------------------
@@ -415,20 +588,23 @@ def recover_trigger_candidate(
     betas=BAERASER_TRIGGER_BETAS,
     eta=BAERASER_ETA,
     warm_start_state=None,
+    exclude_target=True,
 ):
     """Recover one candidate generator for the supplied trigger operator.
 
-    `warm_start_state`: optional (G_state_dict, M_state_dict) pair from a
-    previously-converged recovery run on the SAME attack family (e.g. the
-    1% checkpoint's generator, reused as the starting point for the 5%
-    checkpoint). This only reuses information already available to the
-    defense (its own prior recovery runs on this attack family) — it does
-    not give the defense any new access to attacker information — and
-    typically needs fewer epochs to reconverge on a new checkpoint.
+    `exclude_target` (v3, default True): target-class images are dropped from every
+    batch, so the hinge asks "does this trigger CAUSE the target class on images that
+    are not already the target class?" (v2 counted target-class images, which satisfy
+    the hinge trivially).
 
-    NOTE: for Blended and Silent Killer this is an empirical extension of
-    the original BadNets-oriented notebook implementation. Full-image
-    recovery has a much larger search space (3072 values on CIFAR-10).
+    `warm_start_state`: optional (G_state_dict, M_state_dict) pair used as the INITIAL
+    weights. Off in the main matrix (see recover_trigger_pool). The initial-weight
+    hashes are attached as G._init_hash / M._init_hash so callers can verify that a
+    candidate really started fresh.
+
+    NOTE: for Blended and Silent Killer this is an empirical extension of the original
+    BadNets-oriented notebook implementation. Full-image recovery has a much larger
+    search space (3072 values on CIFAR-10).
     """
     out_size = int(np.prod(operator.trigger_shape()))
     G = BaEraserGenerator(out_size=out_size).to(device)
@@ -444,6 +620,8 @@ def recover_trigger_candidate(
                 f"warm_start_state incompatible with this operator's trigger "
                 f"shape, falling back to random init: {e}"
             )
+    G._init_hash = state_hash(G)
+    M._init_hash = state_hash(M)
 
     opt_G = optim.Adam(G.parameters(), lr=lr, betas=betas)
     opt_M = optim.Adam(M.parameters(), lr=lr, betas=betas)
@@ -461,9 +639,13 @@ def recover_trigger_candidate(
         sums = {"hinge": 0.0, "mi": 0.0, "prob": 0.0}
         n_batches = 0
 
-        for imgs, _ in defense_loader:
-            imgs = imgs.to(device)
+        for imgs, lbls in defense_loader:
+            imgs, lbls = imgs.to(device), lbls.to(device)
+            if exclude_target:
+                imgs = imgs[lbls != target_label]
             B = imgs.size(0)
+            if B < 2:                      # BatchNorm1d in G needs >1 sample
+                continue
 
             z = G.gen_noise(B, device)
             trig_flat = G(z)
@@ -529,14 +711,17 @@ def evaluate_exact_trigger_asr(
     total_target = 0
     total = 0
 
-    for batch_idx, (imgs, _) in enumerate(defense_loader):
+    for batch_idx, (imgs, lbls) in enumerate(defense_loader):
         if batch_idx >= n_eval_batches:
             break
-        imgs = imgs.to(device)
-        triggered = operator.apply(imgs, trigger_tensor)
+        imgs, lbls = imgs.to(device), lbls.to(device)
+        keep = lbls != target_label            # ASR is defined on NON-target images
+        if keep.sum().item() == 0:
+            continue
+        triggered = operator.apply(imgs[keep], trigger_tensor)
         preds = victim_model(triggered).argmax(1)
         total_target += (preds == target_label).sum().item()
-        total += imgs.size(0)
+        total += int(keep.sum().item())
 
     return total_target / max(total, 1)
 
@@ -552,22 +737,34 @@ def recover_trigger_pool(
     verbose=True,
     warm_start_state=None,
     config_override=None,
+    heldout_loader=None,
+    chain_epsilons=False,
+    return_states=False,
 ):
     """Recover and rank exact trigger candidates for one victim model.
 
-    COARSE-TO-FINE WITH EARLY EXIT: tries `epsilons` (the coarse pass)
-    first. If `min_accepted_to_stop` triggers are accepted, recovery stops
-    there — the `fine_epsilons` list is only consulted if the coarse pass
-    wasn't conclusive. This keeps genuine recovery running for every
-    checkpoint while not paying for an exhaustive sweep once enough
-    evidence exists.
+    `heldout_loader`: optional held-out defense slice. If given, candidate ASR /
+    acceptance is measured there instead of on the images the generator trained on.
+
+    INITIALISATION (v3): every epsilon starts from a FRESH random init. v2 silently
+    carried the previous epsilon's G/M weights into the next one even with
+    warm_start_state=None, so epsilons were not independent. Now:
+      chain_epsilons=False (default): fresh init per epsilon. If `warm_start_state`
+          is passed it is applied identically to EVERY epsilon (explicit opt-in;
+          keep it off in the main matrix).
+      chain_epsilons=True: legacy chained behaviour (ablation only).
+    Initial/final weight hashes are logged per candidate; with fresh random inits
+    recovery_meta["fresh_init_verified"] is True iff every init hash is distinct and
+    differs from every earlier run's final weights.
+
+    COARSE-TO-FINE WITH EARLY EXIT: tries `epsilons` (the coarse pass) first. If
+    `min_accepted_to_stop` triggers are accepted, recovery stops there; `fine_epsilons`
+    are only consulted if the coarse pass wasn't conclusive.
 
     Per-attack budgets come from ATTACK_RECOVERY_CONFIG (keyed by
     `operator.recovery_key()`) unless `config_override` is supplied.
 
     Returns: (trigger_pool, all_candidates, recovery_meta)
-      recovery_meta includes wall-clock time and which epsilons were
-      actually tried, for the compute-cost table.
     """
     cfg = config_override or ATTACK_RECOVERY_CONFIG.get(operator.recovery_key())
     if cfg is None:
@@ -585,32 +782,49 @@ def recover_trigger_pool(
     all_candidates = []
     epsilons_tried = []
     t_start = time.time()
+    eval_loader = heldout_loader if heldout_loader is not None else defense_loader
+    eval_split = "heldout" if heldout_loader is not None else "train"
 
+    if chain_epsilons:
+        init_mode = "chained"
+    elif warm_start_state is not None:
+        init_mode = "warm_fixed"
+    else:
+        init_mode = "random"
+    if verbose and init_mode != "random":
+        print(f"  NOTE: recovery init mode = {init_mode} (main matrix should use 'random').")
+
+    chained_ws = warm_start_state if chain_epsilons else None
+    fixed_ws = None if chain_epsilons else warm_start_state
     last_g_state, last_m_state = None, None
-    if warm_start_state is not None:
-        last_g_state, last_m_state = warm_start_state
+    init_hashes, final_hashes = [], set()
 
     def _run_epsilon_batch(epsilon_list, phase):
-        nonlocal last_g_state, last_m_state
-        for eps_idx, eps_val in enumerate(epsilon_list):
-            set_seed(seed + eps_idx + target_label * 100)
+        nonlocal chained_ws, last_g_state, last_m_state
+        for eps_val in epsilon_list:
+            set_seed(seed + len(epsilons_tried) + target_label * 100)
             epsilons_tried.append(eps_val)
 
             if verbose:
                 print(f"  [{phase}] recovery epsilon={eps_val:.2f}")
 
-            ws = (last_g_state, last_m_state) if last_g_state is not None else None
+            ws = chained_ws if chain_epsilons else fixed_ws
             G, M, logs = recover_trigger_candidate(
                 victim_model, defense_loader, target_label, eps_val,
                 operator, device=device,
                 epochs=cfg["epochs"],
                 warm_start_state=ws,
             )
+            init_g, init_m = G._init_hash, M._init_hash
+            init_hashes.append((init_g, init_m))
+            final_g = state_hash(G)
+            final_hashes.add(final_g)
 
-            # Cache this run's converged weights for the next epsilon /
-            # next call's warm start (same attack family).
-            last_g_state = {k: v.detach().clone() for k, v in G.state_dict().items()}
-            last_m_state = {k: v.detach().clone() for k, v in M.state_dict().items()}
+            if chain_epsilons or return_states:
+                last_g_state = {k: v.detach().clone() for k, v in G.state_dict().items()}
+                last_m_state = {k: v.detach().clone() for k, v in M.state_dict().items()}
+                if chain_epsilons:
+                    chained_ws = (last_g_state, last_m_state)
 
             G.eval()
             with torch.no_grad():
@@ -622,7 +836,7 @@ def recover_trigger_pool(
             for c in range(cfg["n_candidates"]):
                 candidate = candidates[c].view(*operator.trigger_shape())
                 asr = evaluate_exact_trigger_asr(
-                    victim_model, candidate, defense_loader,
+                    victim_model, candidate, eval_loader,
                     target_label, operator, device=device
                 )
                 if asr > best_asr:
@@ -636,6 +850,11 @@ def recover_trigger_pool(
                 "candidate_asr": float(best_asr),
                 "accepted": bool(accepted),
                 "phase": phase,
+                "eval_split": eval_split,
+                "init_mode": init_mode,
+                "init_hash_G": init_g,
+                "init_hash_M": init_m,
+                "final_hash_G": final_g,
                 **operator.metadata(),
             }
             all_candidates.append(info)
@@ -675,12 +894,26 @@ def recover_trigger_pool(
             print("  Coarse pass inconclusive — trying fine epsilons.")
         _run_epsilon_batch(cfg["fine_epsilons"], "fine")
 
+    fresh_verified = None
+    if init_mode == "random":
+        g_inits = [g for g, _ in init_hashes]
+        fresh_verified = (len(set(g_inits)) == len(g_inits)
+                          and not (set(g_inits) & final_hashes))
+        if not fresh_verified:
+            warnings.warn("recover_trigger_pool: initial generator weights repeated or equal "
+                          "to an earlier run's final weights -> epsilons are NOT independent.")
+
     recovery_meta = {
         "attack": operator.recovery_key(),
         "epsilons_tried": epsilons_tried,
         "n_epsilons_tried": len(epsilons_tried),
         "n_accepted": len(trigger_pool),
         "wall_clock_seconds": time.time() - t_start,
+        "init_mode": init_mode,
+        "init_hashes": init_hashes,
+        "fresh_init_verified": fresh_verified,
+        "eval_split": eval_split,
+        # only populated with return_states=True / chain_epsilons=True (warm-start use):
         "final_generator_state": last_g_state,
         "final_mine_state": last_m_state,
     }
@@ -695,6 +928,105 @@ def recover_trigger_pool(
         )
 
     return trigger_pool, all_candidates, recovery_meta
+
+
+# ---------------------------------------------------------------------------
+# Generality / control checks (defender-side or diagnostic) -----------------
+# ---------------------------------------------------------------------------
+
+def fresh_recovery_audit(
+    model,
+    defense_loader,
+    eval_loader,
+    target_label,
+    operator,
+    device=DEVICE,
+    seed=SEED + 9000,
+    config_override=None,
+    threshold=None,
+    verbose=False,
+):
+    """Run a FRESH, reduced-budget trigger recovery against `model` (typically the
+    sanitized model) and report how well the freshly recovered triggers work.
+
+    Defender-computable (uses only the defense budget). `eval_loader` should be held
+    out from `defense_loader`. Use it (a) as the tie-break inside baeraser_unlearning
+    (fresh_select_k>1) and (b) as the headline "did the sanitized model just become
+    vulnerable to new triggers?" audit. Compare against the same audit on the
+    poisoned model and on a CLEAN model: a clean model that also accepts triggers
+    means the recovery finds generic universal perturbations, not the backdoor.
+
+    Returns dict(max_asr, n_accepted, n_tried, per_epsilon, seconds).
+    """
+    base = ATTACK_RECOVERY_CONFIG.get(operator.recovery_key(), {})
+    cfg = config_override or dict(
+        epsilons=list(base.get("epsilons", [0.3, 0.6]))[:2],
+        fine_epsilons=[],
+        epochs=base.get("epochs", 5),
+        n_candidates=base.get("n_candidates", 24),
+        min_accepted_to_stop=10 ** 9,        # never stop early: try every epsilon
+    )
+    t0 = time.time()
+    pool, cands, meta = recover_trigger_pool(
+        model, defense_loader, target_label, operator, device=device,
+        recovery_asr_threshold=threshold, seed=seed, verbose=verbose,
+        config_override=cfg, heldout_loader=eval_loader,
+    )
+    return {
+        "max_asr": max((c["candidate_asr"] for c in cands), default=0.0),
+        "n_accepted": len(pool),
+        "n_tried": len(cands),
+        "per_epsilon": [(c["epsilon"], c["candidate_asr"]) for c in cands],
+        "seconds": time.time() - t0,
+    }
+
+
+def universal_adv_vulnerability(
+    model,
+    fit_loader,
+    eval_loader,
+    target_label,
+    device=DEVICE,
+    eps=8 / 255,
+    step=2 / 255,
+    epochs=3,
+    seed=SEED + 7,
+):
+    """Targeted L_inf universal perturbation (raw-pixel space, budget `eps`), fitted on
+    `fit_loader` non-target images, scored on `eval_loader` non-target images.
+
+    Run on the poisoned model, the sanitized model and a clean model. If sanitizing
+    drops this number too, part of the BaEraser gain is generic adversarial
+    robustness (adversarial-training-like), not backdoor removal."""
+    op = SilentKillerTriggerOperator(clip_raw=True)
+    set_seed(seed)
+    model.eval()
+    flags = {id(p): p.requires_grad for p in model.parameters()}
+    for p in model.parameters():
+        p.requires_grad_(False)
+
+    delta = torch.zeros(1, *op.trigger_shape(), device=device)
+    for _ in range(epochs):
+        for x, y in fit_loader:
+            x, y = x.to(device), y.to(device)
+            keep = y != target_label
+            if keep.sum().item() == 0:
+                continue
+            x = x[keep]
+            d = delta.clone().requires_grad_(True)
+            with torch.enable_grad():
+                tgt = torch.full((x.size(0),), target_label, dtype=torch.long, device=device)
+                loss = F.cross_entropy(model(op.apply(x, d)), tgt)
+                (g,) = torch.autograd.grad(loss, d)
+            delta = (delta - step * g.sign()).clamp(-eps, eps).detach()
+
+    for p in model.parameters():
+        p.requires_grad_(flags[id(p)])
+
+    asr = evaluate_exact_trigger_asr(
+        model, delta, eval_loader, target_label, op, device=device, n_eval_batches=10 ** 9
+    )
+    return {"uap_asr": float(asr), "eps": float(eps), "delta_linf": float(delta.abs().max().item())}
 
 
 # ---------------------------------------------------------------------------
@@ -738,11 +1070,29 @@ def make_triggered_batch(
     target_label,
     operator,
     device=DEVICE,
+    true_labels=None,
+    exclude_target=True,
+    label_mode="target",
 ):
+    """Apply one randomly chosen recovered trigger to a batch.
+
+    true_labels + exclude_target (v3): target-class images are dropped first (a
+    "triggered" target-class image carries no backdoor information). Returns
+    (None, None) if nothing is left.
+    label_mode: "target" -> labels are the target class (backdoor unlearning term is
+    ascent on CE(triggered, target)); "true" -> the images' true labels (ablation:
+    minimise CE(triggered, true label))."""
     if not trigger_pool:
         raise ValueError("Empty trigger pool.")
 
+    if exclude_target and true_labels is not None:
+        keep = true_labels != target_label
+        clean_imgs = clean_imgs[keep]
+        true_labels = true_labels[keep]
     B = clean_imgs.shape[0]
+    if B == 0:
+        return None, None
+
     entry = trigger_pool[np.random.randint(0, len(trigger_pool))]
     trigger = entry["tensor"].to(device)
 
@@ -751,10 +1101,19 @@ def make_triggered_batch(
     trigger = trigger.expand(B, -1, -1, -1)
 
     triggered = operator.apply(clean_imgs, trigger)
-    labels = torch.full(
-        (B,), target_label, dtype=torch.long, device=device
-    )
+    if label_mode == "true":
+        if true_labels is None:
+            raise ValueError("label_mode='true' needs true_labels")
+        labels = true_labels
+    else:
+        labels = torch.full((B,), target_label, dtype=torch.long, device=device)
     return triggered, labels
+
+
+def _bucket_key(asr, ca, tol):
+    """Sort key: ASR bucket (ties inside `tol` count as equal), then higher CA."""
+    b = math.floor(asr / tol) if tol and tol > 0 else asr
+    return (b, -(ca if ca is not None else 0.0))
 
 
 def baeraser_unlearning(
@@ -776,44 +1135,92 @@ def baeraser_unlearning(
     ca_before=None,
     asr_before=None,
     ca_drop_tolerance=CA_DROP_TOLERANCE,
-    asr_stop_threshold=BAERASER_ASR_STOP_THRESHOLD,
+    asr_stop_threshold=None,
     omega_update_freq=3,
+    select_loader=None,
+    freeze_bn=False,
+    exclude_target=True,
+    trigger_loss_mode="target_ascent",
+    trigger_ascent_cap=None,
+    asr_tie_tol=0.005,
+    fresh_select_k=1,
+    fresh_audit_kwargs=None,
+    allow_leaky_selection=False,
+    restore_best=True,
+    seed=SEED,
 ):
-    """Shared BaEraser-lite dynamic-penalty unlearning.
+    """Shared BaEraser-lite dynamic-penalty unlearning (v3).
 
-    The attack-specific part is ONLY `operator.apply()`. The objective is:
-        alpha * (clean_loss - trigger_loss) + beta * penalty
-    where penalty = sum_k omega_k * |theta_k - theta_0,k|.
+    Objective (default, trigger_loss_mode="target_ascent"):
+        alpha * (clean_loss - trigger_loss) + beta * penalty,
+        penalty = sum_k omega_k * |theta_k - theta_0,k|
+    where trigger_loss = CE(model(triggered non-target images), target). This term is
+    an UNBOUNDED ascent; gradient clipping is the only brake. Options:
+      trigger_ascent_cap=c : ascent stops (zero gradient) once trigger_loss > c.
+      trigger_loss_mode="true_label": trigger term becomes + CE(model(triggered),
+          TRUE label), i.e. the model is trained to ignore the trigger. Bounded;
+          report as an ablation.
+      exclude_target=True  : target-class images are removed from the triggered batch.
 
-    `omega_update_freq`: recompute omega every N epochs instead of every
-    epoch (previous default was every epoch, i.e. equivalent to
-    omega_update_freq=1). omega is a full forward+backward pass over the
-    defense set on top of the actual training step, so refreshing it less
-    often meaningfully cuts per-epoch cost. Set to 1 to reproduce the
-    original every-epoch behaviour as an ablation.
+    CHECKPOINT SELECTION (no oracle, no test data):
+      1. Only epochs whose held-out clean CA (select_loader) is >= its pre-unlearning
+         value - ca_drop_tolerance are eligible.
+      2. Rank by proxy ASR of the recovered triggers on held-out non-target images;
+         proxy values within `asr_tie_tol` tie, and ties go to higher held-out CA.
+      3. If fresh_select_k > 1, the k best epochs are re-ranked by the ASR of FRESHLY
+         recovered triggers on that epoch's weights (fresh_recovery_audit; pass
+         `fresh_audit_kwargs` to change its budget). The proxy can be driven to ~0
+         without removing the real backdoor; fresh triggers are much harder to game.
+      calculate_ca/asr + ca_loader/asr_loader are MONITORING ONLY: logged every epoch
+      and reported at the selected epoch (CA_after / ASR_after = the HEADLINE numbers).
+      The epoch with the best real ASR is reported separately as oracle_* (an upper
+      bound to be labelled as such; never a defense result).
+    Early stopping is off unless asr_stop_threshold is given. It then fires on the
+    PROXY ASR, which can be gamed; prefer running all epochs.
+
+    select_loader is required unless allow_leaky_selection=True (legacy v1 behaviour:
+    select on the monitoring/test loaders; result tagged LEAKY).
+
+    The model is modified in place. With restore_best=True it ends holding the
+    SELECTED weights (or the original weights if no epoch was eligible, status
+    NO_VALID_CHECKPOINT); v2 left the last-epoch weights in it.
+
+    freeze_bn: keep BatchNorm layers in eval mode while unlearning (ablation; default
+    False).
     """
     if not trigger_pool:
         raise ValueError("Cannot unlearn without recovered triggers.")
+    if trigger_loss_mode not in ("target_ascent", "true_label"):
+        raise ValueError("trigger_loss_mode must be 'target_ascent' or 'true_label'")
 
-    theta0 = {
-        n: p.detach().clone()
-        for n, p in model.named_parameters()
-    }
+    held_out = select_loader is not None
+    if not held_out and not allow_leaky_selection:
+        raise ValueError(
+            "baeraser_unlearning needs select_loader (held-out defense slice). Selecting "
+            "on the monitoring/test loaders is leaky; pass allow_leaky_selection=True "
+            "only to reproduce v1 numbers."
+        )
 
+    init_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    theta0 = {n: p.detach().clone() for n, p in model.named_parameters()}
     criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = optim.SGD(
-        model.parameters(), lr=lr, momentum=momentum
-    )
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum)
 
-    ca_min = None
-    if ca_before is not None:
-        ca_min = ca_before - ca_drop_tolerance
+    if held_out:
+        selection_source = "defense_holdout"
+        ca_min = _clean_acc(model, select_loader, device) - ca_drop_tolerance
+    else:
+        selection_source = "test_monitor (LEAKY)"
+        warnings.warn(
+            "baeraser_unlearning: allow_leaky_selection=True -> best epoch / early stop / "
+            "CA floor are chosen on the monitoring (test) loaders. Reported CA/ASR are "
+            "selection-biased."
+        )
+        ca_min = None if ca_before is None else ca_before - ca_drop_tolerance
 
+    k_keep = max(1, int(fresh_select_k)) if held_out else 1
     logs = []
-    best_state = None
-    best_asr = float("inf")
-    best_ca = -float("inf")
-    best_epoch = 0
+    cands = []          # eligible epochs kept for the final pick (state on CPU)
     omega = None
 
     for epoch in range(1, max_epochs + 1):
@@ -823,6 +1230,10 @@ def baeraser_unlearning(
             omega = compute_omega(model, defense_loader, criterion, device)
 
         model.train()
+        if freeze_bn:
+            for m in model.modules():
+                if isinstance(m, nn.modules.batchnorm._BatchNorm):
+                    m.eval()
         sums = {"clean": 0.0, "trigger": 0.0, "penalty": 0.0, "total": 0.0}
         n_batches = 0
 
@@ -832,9 +1243,21 @@ def baeraser_unlearning(
             clean_loss = criterion(model(imgs), lbls)
 
             triggered, trig_labels = make_triggered_batch(
-                imgs, trigger_pool, target_label, operator, device
+                imgs, trigger_pool, target_label, operator, device,
+                true_labels=lbls, exclude_target=exclude_target,
+                label_mode="true" if trigger_loss_mode == "true_label" else "target",
             )
-            trigger_loss = criterion(model(triggered), trig_labels)
+            if triggered is None:
+                trigger_loss = torch.zeros((), device=device)
+                trigger_term = torch.zeros((), device=device)
+            else:
+                trigger_loss = criterion(model(triggered), trig_labels)
+                if trigger_loss_mode == "true_label":
+                    trigger_term = trigger_loss
+                else:
+                    ascent = trigger_loss if trigger_ascent_cap is None else \
+                        torch.clamp(trigger_loss, max=trigger_ascent_cap)
+                    trigger_term = -ascent
 
             penalty = torch.zeros((), device=device)
             for name, param in model.named_parameters():
@@ -843,7 +1266,7 @@ def baeraser_unlearning(
                         omega[name] * (param - theta0[name]).abs()
                     ).sum()
 
-            total_loss = alpha * (clean_loss - trigger_loss) + beta * penalty
+            total_loss = alpha * (clean_loss + trigger_term) + beta * penalty
 
             optimizer.zero_grad(set_to_none=True)
             total_loss.backward()
@@ -855,9 +1278,19 @@ def baeraser_unlearning(
             sums["penalty"] += penalty.item()
             sums["total"] += total_loss.item()
             n_batches += 1
+        train_time = time.time() - t0
 
-        ca = None
-        asr = None
+        # --- defender-side selection signals (counted as defence cost) -------
+        t1 = time.time()
+        sel_ca = sel_asr = None
+        if held_out:
+            sel_ca = _clean_acc(model, select_loader, device)
+            sel_asr = _proxy_asr(model, select_loader, trigger_pool, operator,
+                                 target_label, device)
+        sel_time = time.time() - t1
+
+        # --- monitoring on test loaders (NOT counted as cost, NOT used if held_out)
+        ca = asr = None
         if calculate_ca is not None and ca_loader is not None:
             ca = calculate_ca(model, ca_loader, device)
         if calculate_asr is not None and asr_loader is not None:
@@ -865,51 +1298,109 @@ def baeraser_unlearning(
 
         param_dist = sum(
             (p - theta0[n]).norm().item()
-            for n, p in model.named_parameters()
-            if n in theta0
+            for n, p in model.named_parameters() if n in theta0
         )
 
-        log = {
+        logs.append({
             "epoch": epoch,
-            "clean_loss": sums["clean"]/max(n_batches,1),
-            "trigger_loss": sums["trigger"]/max(n_batches,1),
-            "penalty": sums["penalty"]/max(n_batches,1),
-            "total_loss": sums["total"]/max(n_batches,1),
-            "CA": ca,
-            "ASR": asr,
+            "clean_loss": sums["clean"] / max(n_batches, 1),
+            "trigger_loss": sums["trigger"] / max(n_batches, 1),
+            "penalty": sums["penalty"] / max(n_batches, 1),
+            "total_loss": sums["total"] / max(n_batches, 1),
+            "CA": ca,                  # monitoring (test/report)
+            "ASR": asr,                # monitoring (test/report)  <- REAL ASR
+            "sel_CA": sel_ca,          # selection signal (held-out defense data)
+            "sel_proxy_ASR": sel_asr,  # selection signal (recovered-trigger proxy)
+            "sel_fresh_ASR": None,     # filled for the finalists if fresh_select_k>1
             "param_dist": param_dist,
             "omega_refreshed": (epoch - 1) % omega_update_freq == 0,
-            "time": time.time() - t0,
-        }
-        logs.append(log)
+            "time": train_time + sel_time,
+        })
 
-        # Valid checkpoint criterion: minimize ASR without exceeding CA floor.
-        valid_ca = (ca is None) or (ca_min is None) or (ca >= ca_min)
-        if valid_ca and asr is not None:
-            if asr < best_asr or (asr == best_asr and (ca or 0) > best_ca):
-                best_asr = asr
-                best_ca = ca if ca is not None else best_ca
-                best_epoch = epoch
-                best_state = {
-                    k: v.detach().cpu().clone()
-                    for k, v in model.state_dict().items()
-                }
+        crit_ca, crit_asr = (sel_ca, sel_asr) if held_out else (ca, asr)
+        valid_ca = (crit_ca is None) or (ca_min is None) or (crit_ca >= ca_min)
+        if valid_ca and crit_asr is not None:
+            cands.append({
+                "epoch": epoch, "crit_asr": crit_asr, "crit_ca": crit_ca,
+                "mon_ca": ca, "mon_asr": asr, "fresh_asr": None,
+                "state": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
+            })
+            cands.sort(key=lambda c: _bucket_key(c["crit_asr"], c["crit_ca"], asr_tie_tol))
+            del cands[k_keep:]
 
-        if asr is not None and valid_ca and asr < asr_stop_threshold:
+        if asr_stop_threshold is not None and crit_asr is not None and valid_ca \
+                and crit_asr < asr_stop_threshold:
             break
 
+    # --- final pick: optional fresh-trigger re-rank of the finalists -----------
+    audit_sec = 0.0
+    chosen = cands[0] if cands else None
+    if held_out and len(cands) > 1:
+        probe = copy.deepcopy(model)
+        ta = time.time()
+        for c in cands:
+            probe.load_state_dict({k: v.to(device) for k, v in c["state"].items()})
+            aud = fresh_recovery_audit(
+                probe, defense_loader, select_loader, target_label, operator,
+                device=device, seed=seed + 9000 + c["epoch"], **(fresh_audit_kwargs or {}))
+            c["fresh_asr"] = aud["max_asr"]
+            logs[c["epoch"] - 1]["sel_fresh_ASR"] = aud["max_asr"]
+        audit_sec = time.time() - ta
+        del probe
+        chosen = min(cands, key=lambda c: _bucket_key(c["fresh_asr"], c["crit_ca"], asr_tie_tol))
+
+    # --- oracle row: best REAL ASR among CA-eligible epochs (upper bound only) --
+    oracle = None
+    for l in logs:
+        if l["ASR"] is None or l["CA"] is None:
+            continue
+        if ca_before is not None and l["CA"] < ca_before - ca_drop_tolerance:
+            continue
+        if oracle is None or (l["ASR"], -l["CA"]) < (oracle["ASR"], -oracle["CA"]):
+            oracle = l
+
+    if restore_best:
+        model.load_state_dict(
+            {k: v.to(device) for k, v in (chosen["state"] if chosen else init_state).items()})
+    model.eval()
+
+    best_state = None if chosen is None else chosen["state"]
     return {
         "model": model,
         "best_state_dict": best_state,
         "logs": logs,
-        "best_epoch": best_epoch,
-        "CA_after": None if best_ca == -float("inf") else best_ca,
-        "ASR_after": None if best_asr == float("inf") else best_asr,
+        "best_epoch": 0 if chosen is None else chosen["epoch"],
+        # HEADLINE: real CA/ASR at the epoch chosen WITHOUT looking at them
+        "CA_after": None if chosen is None else chosen["mon_ca"],
+        "ASR_after": None if chosen is None else chosen["mon_asr"],
+        # what selection actually saw:
+        "sel_CA_after": None if chosen is None else chosen["crit_ca"],
+        "sel_ASR_after": None if chosen is None else chosen["crit_asr"],
+        "sel_fresh_ASR_after": None if chosen is None else chosen["fresh_asr"],
+        "selection_source": selection_source,
+        "selection_rule": ("heldout CA floor -> proxy ASR (tie_tol=%g)%s"
+                           % (asr_tie_tol, " -> fresh-trigger ASR on top-%d" % k_keep
+                              if (held_out and k_keep > 1) else "")
+                           if held_out else "LEAKY test-monitor"),
+        # ORACLE UPPER BOUND (uses real ASR; not a defense result):
+        "oracle_best_epoch": None if oracle is None else oracle["epoch"],
+        "oracle_CA": None if oracle is None else oracle["CA"],
+        "oracle_ASR": None if oracle is None else oracle["ASR"],
         "CA_before": ca_before,
         "ASR_before": asr_before,
-        "status": "SUCCESS" if best_state is not None else "NO_VALID_CHECKPOINT",
+        "status": "SUCCESS" if chosen is not None else "NO_VALID_CHECKPOINT",
         "operator": operator.metadata(),
-        "total_compute_seconds": sum(l["time"] for l in logs),
+        "config": {
+            "exclude_target": exclude_target, "trigger_loss_mode": trigger_loss_mode,
+            "trigger_ascent_cap": trigger_ascent_cap, "freeze_bn": freeze_bn,
+            "asr_stop_threshold": asr_stop_threshold, "fresh_select_k": k_keep,
+            "asr_tie_tol": asr_tie_tol, "lr": lr, "alpha": alpha, "beta": beta,
+            "max_epochs": max_epochs, "ca_drop_tolerance": ca_drop_tolerance,
+        },
+        "selection_audit_seconds": audit_sec,
+        # unlearning + selection signals + fresh audits; EXCLUDES test monitoring and
+        # recovery (baeraser_lite() adds recovery into total_cost_seconds):
+        "total_compute_seconds": sum(l["time"] for l in logs) + audit_sec,
     }
 
 
@@ -938,43 +1429,57 @@ def baeraser_lite(
     recovery_asr_threshold=None,
     warm_start_state=None,
     config_override=None,
+    inplace=False,
+    chain_epsilons=False,
+    return_states=False,
+    seed=SEED,
     **unlearning_kwargs,
 ):
     """Main API for the defense x attack matrix.
 
-    DEPLOYABLE / MAIN-MATRIX PATH (use this for every cell of the defense x
-    attack matrix and for anything feeding the controller-vs-baselines-vs-
-    oracle comparison):
+    DEPLOYABLE / MAIN-MATRIX PATH (use this for every cell of the defense x attack
+    matrix and for anything feeding the controller-vs-baselines-vs-oracle comparison):
 
-        baeraser_lite(model, clean_loader, BadNetsTriggerOperator())
-        baeraser_lite(model, clean_loader,
-                      BlendedTriggerOperator(alpha=ALPHA_TRAIN))
-        baeraser_lite(model, clean_loader, SilentKillerTriggerOperator())
+        train_loader, select_loader = make_select_split(val_subset)   # val half of test
+        res = baeraser_lite(model, train_loader, BlendedTriggerOperator(alpha=ALPHA),
+                            select_loader=select_loader,
+                            calculate_ca=..., ca_loader=report_testloader,
+                            calculate_asr=..., asr_loader=report_asr_loader,
+                            ca_before=..., asr_before=...)
+        res.unlearning["CA_after"], ["ASR_after"]   # HEADLINE (selected epoch)
+        res.unlearning["oracle_ASR"]                # upper bound row, label it as such
+        res.unlearning["total_cost_seconds"]        # recovery + unlearning + audits
 
-    To warm-start recovery from a previous poison-rate/count's converged
-    generator (same attack family, cheaper reconvergence):
+    Defaults that matter (v3): fresh random init per epsilon (no warm start / chaining),
+    no early stopping, target-class images excluded, select_loader REQUIRED,
+    victim copied (inplace=False) and the returned model holds the SELECTED weights.
 
-        result_1pct = baeraser_lite(model_1pct, loader, BadNetsTriggerOperator())
-        ws = (result_1pct.recovery_meta["final_generator_state"],
-              result_1pct.recovery_meta["final_mine_state"])
-        result_5pct = baeraser_lite(model_5pct, loader, BadNetsTriggerOperator(),
-                                     warm_start_state=ws)
+    CLEAN-MODEL CONTROL: call this exactly the same way on a clean checkpoint and
+    compare with summarize_result(); see also fresh_recovery_audit and
+    universal_adv_vulnerability.
 
     DIAGNOSTIC-ONLY PATH — oracle_trigger:
-    This does NOT produce a BAERASER-lite result. It substitutes the
-    attacker's actual, ground-truth trigger for the recovery stage, which no
-    real defense (and no real post-deployment monitor) has access to. Its
-    only legitimate use is to separate "did recovery fail?" from "did
-    unlearning fail?" as a diagnostic ablation, reported in its own labeled
-    subsection — never in the main defense x attack matrix, and never
-    conflated with the ground-truth-best-defense "Oracle" row used in the
-    controller-vs-baselines-vs-oracle comparison (that's a different oracle
-    entirely: best defense, not best trigger).
+    This does NOT produce a BAERASER-lite result. It substitutes the attacker's actual,
+    ground-truth trigger for the recovery stage, which no real defense has access to.
+    Its only legitimate use is to separate "did recovery fail?" from "did unlearning
+    fail?" in a separately labelled ablation — never in the main matrix, and never
+    conflated with the best-defense "Oracle" row of the controller comparison.
 
-        baeraser_lite(model, clean_loader, BlendedTriggerOperator(alpha=0.1),
+        baeraser_lite(model, loader, BlendedTriggerOperator(alpha=0.1),
                       oracle_trigger=known_blended_pattern,
-                      diagnostic_only=True)   # <- required ack, not optional
+                      diagnostic_only=True, select_loader=select_loader)
     """
+    if unlearning_kwargs.get("select_loader") is None and \
+            not unlearning_kwargs.get("allow_leaky_selection", False):
+        raise ValueError(
+            "baeraser_lite needs select_loader=... (held-out defense slice, see "
+            "make_select_split). Selecting on test data is leaky; pass "
+            "allow_leaky_selection=True only to reproduce v1 numbers."
+        )
+
+    if not inplace:
+        victim_model = copy.deepcopy(victim_model)
+
     if oracle_trigger is not None:
         if not diagnostic_only:
             raise ValueError(
@@ -1012,10 +1517,25 @@ def baeraser_lite(
             operator,
             device=device,
             recovery_asr_threshold=recovery_asr_threshold,
+            seed=seed,
             warm_start_state=warm_start_state,
             config_override=config_override,
+            heldout_loader=unlearning_kwargs.get("select_loader"),
+            chain_epsilons=chain_epsilons,
+            return_states=return_states,
         )
         mode = "recovered"
+
+    if not trigger_pool:
+        result = {
+            "model": victim_model, "status": "FAILED_NO_TRIGGERS", "best_epoch": 0,
+            "CA_after": None, "ASR_after": None, "logs": [], "mode": mode,
+            "total_compute_seconds": 0.0,
+            "total_cost_seconds": (recovery_meta or {}).get("wall_clock_seconds", 0.0),
+        }
+        return BaEraserResult(model=victim_model, trigger_pool=[],
+                              recovery_candidates=recovery_candidates,
+                              recovery_meta=recovery_meta, unlearning=result, mode=mode)
 
     result = baeraser_unlearning(
         victim_model,
@@ -1024,9 +1544,14 @@ def baeraser_lite(
         operator,
         target_label,
         device=device,
+        seed=seed,
         **unlearning_kwargs,
     )
     result["mode"] = mode
+    result["total_cost_seconds"] = (
+        result["total_compute_seconds"]
+        + (recovery_meta["wall_clock_seconds"] if recovery_meta else 0.0)
+    )
 
     return BaEraserResult(
         model=result["model"],
@@ -1038,34 +1563,61 @@ def baeraser_lite(
     )
 
 
+def summarize_result(res):
+    """Flat dict of a BaEraserResult for the main table / clean-model control table.
+
+    Run the identical config on a backdoored model and on a CLEAN model and compare
+    n_accepted / max_candidate_asr: if the clean model accepts triggers just as often,
+    the recovery is finding generic universal perturbations, not the backdoor (reframe
+    the method accordingly). Either way disclose that the defender is given the blend
+    family and alpha."""
+    u = res.unlearning
+    rm = res.recovery_meta or {}
+    cands = res.recovery_candidates or []
+    return {
+        "mode": res.mode,
+        "status": u.get("status"),
+        "n_accepted": rm.get("n_accepted", 0),
+        "n_epsilons_tried": rm.get("n_epsilons_tried", 0),
+        "max_candidate_asr": max((c["candidate_asr"] for c in cands), default=None),
+        "accepted_eps": [round(t["epsilon"], 3) for t in res.trigger_pool if t.get("epsilon") is not None],
+        "fresh_init_verified": rm.get("fresh_init_verified"),
+        "selected_epoch": u.get("best_epoch"),
+        "CA_before": u.get("CA_before"),
+        "ASR_before": u.get("ASR_before"),
+        "CA_after_selected": u.get("CA_after"),
+        "ASR_after_selected": u.get("ASR_after"),          # headline
+        "sel_proxy_ASR": u.get("sel_ASR_after"),
+        "sel_fresh_ASR": u.get("sel_fresh_ASR_after"),
+        "oracle_epoch": u.get("oracle_best_epoch"),        # upper bound, label as such
+        "oracle_CA": u.get("oracle_CA"),
+        "oracle_ASR": u.get("oracle_ASR"),
+        "selection_rule": u.get("selection_rule"),
+        "recovery_s": rm.get("wall_clock_seconds"),
+        "unlearning_s": u.get("total_compute_seconds"),
+        "total_cost_s": u.get("total_cost_seconds"),
+    }
+
+
 # ---------------------------------------------------------------------------
-# Example configuration
+# Recommended protocol (v3)
 # ---------------------------------------------------------------------------
 #
-# Main matrix (deployable, use for every cell):
+#   val_idx, report_idx = split_test_set(testset, n_val=2500)
+#   val_set, report_set = Subset(testset, val_idx), Subset(testset, report_idx)
+#   train_loader, select_loader = make_select_split(val_set, n_select=500)
+#   # CA monitor + ASR set: built from report_set ONLY.
+#   assert_baseline_ca(model, FULL_testloader, 0.9483, name="pr01")   # before the split
 #
-#   result = baeraser_lite(
-#       victim_model,
-#       defense_loader,
-#       BadNetsTriggerOperator(size=4, placement="random"),
-#       target_label=TARGET_CLASS,
-#       calculate_ca=calculate_ca,
-#       ca_loader=testloader,
-#       calculate_asr=calculate_asr,
-#       asr_loader=asr_loader,
-#       ca_before=CA_before,
-#       asr_before=ASR_before,
-#   )
-#   # result.mode == "recovered"
-#   # result.recovery_meta["n_accepted"], ["wall_clock_seconds"] -> cost table
+#   res = baeraser_lite(model, train_loader, BlendedTriggerOperator(alpha=0.1),
+#                       select_loader=select_loader, fresh_select_k=3,
+#                       calculate_ca=calculate_ca, ca_loader=report_loader,
+#                       calculate_asr=calculate_asr, asr_loader=report_asr_loader,
+#                       ca_before=CA_before, asr_before=ASR_before)
+#   row = summarize_result(res)
 #
-# Diagnostic-only, Blended/Silent Killer recovery-vs-unlearning ablation:
-#
-#   result = baeraser_lite(
-#       victim_model, defense_loader,
-#       BlendedTriggerOperator(alpha=0.1),
-#       oracle_trigger=blended_pattern_seed777,   # loaded from disk
-#       diagnostic_only=True,
-#   )
-#   # result.mode == "oracle_diagnostic" -- report separately, never in the
-#   # main matrix.
+#   # same call on the CLEAN checkpoint -> control row
+#   # audits: fresh_recovery_audit(...) and universal_adv_vulnerability(...) on
+#   #         poisoned / sanitized / clean models
+#   # ablations: trigger_loss_mode="true_label", trigger_ascent_cap=5.0, freeze_bn=True,
+#   #            BlendedTriggerOperator(alpha=0.05 / 0.2) (mismatched alpha)
