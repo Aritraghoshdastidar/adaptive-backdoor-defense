@@ -4,20 +4,20 @@
 
 ## Scope Discipline
 
-**Exactly three core methods. No more, unless the 4th (NAD) is empirically earned (see `03_CONTROLLER_LOGIC.md`).**
+**The defense suite consists of four methods mapped to severity & behavioral regimes:**
 
 | Method | Role | Severity Tier |
 |--------|------|---------------|
-| **Fine-tuning** | Low-severity fix | Cheap, strong baseline |
-| **Neuron Pruning (+ fine-tune)** | Mid-severity fix | Fast, interpretable |
-| **BAERASER-style unlearning** | High-severity fix | Heavy hammer |
-| **NAD / Distillation** *(conditional 4th)* | Stealthy/behavioral fix | Only if AC-low/STRIP-low-entropy regime is observed |
+| **Fine-tuning (FT)** | Low-severity fix | Cheap, strong baseline |
+| **ANP (Adversarial Neuron Pruning + FT)** | Mid-severity fix / Feature robustness | Adversarial mask optimization, fast & robust |
+| **BAERASER-lite** | High-severity structural fix | Distillation + targeted unlearning |
+| **NAD (Neural Attention Distillation)** | Stealthy / behavioral fix | Teacher-student attention distillation |
 
 ### Explicitly Out of Scope
 - Exact unlearning (SISA) — infrastructure-heavy, not worth it for this scope
 - VIBE — full retraining loop, too expensive
 - Continual online machine unlearning — explodes scope; covered instead by the lighter "periodic re-evaluation" framing in `06_POST_DEPLOYMENT.md`
-- Fisher-guided damping — complex, slow to tune, optional Phase-2 only if pruning underperforms
+- Fisher-guided damping — complex, slow to tune
 
 ---
 
@@ -28,41 +28,40 @@
 - **Implementation notes:**
   - Use the **exact same 2,500 images** (`defense_indices.npy`) across all team members and all attacks — this is mandatory for valid comparison
   - Low LR (e.g., 1e-4 to 1e-3), few epochs (5–15), monitor validation CA to avoid overfitting/catastrophic forgetting
-- **Expected effect:** Strong ASR reduction on BadNets-level (low severity) poisoning; may be insufficient against Blended/LC.
+- **Expected effect:** Strong ASR reduction on BadNets-level (low severity) poisoning; may be insufficient against Blended/SK.
 
 ---
 
-## 2. Neuron Pruning + Fine-Tuning
+## 2. ANP (Adversarial Neuron Pruning + Fine-Tuning)
 
-- **What it does:** Identify neurons in the penultimate (or earlier convolutional) layer that are unusually responsive to the trigger pattern, prune them, then lightly fine-tune to recover clean accuracy.
-- **How to identify trigger-responsive neurons:**
-  - Use activation statistics from the AC stage — neurons most active in the "suspicious cluster" are pruning candidates
-  - Alternatively use Grad-CAM attention maps on triggered images to localize which channels light up on the trigger region
+- **What it does:** Uses Adversarial Neuron Pruning (Wu & Dong, 2021) to identify and mask vulnerable backdoor neurons by applying adversarial perturbations to neuron weights/activations on the clean budget, followed by light fine-tuning.
+- **How it identifies backdoor neurons:**
+  - Injects continuous perturbation noise to find neurons whose sensitivity is disproportionately exploited by backdoor shortcuts
+  - Prunes/masks neurons with highest perturbation sensitivity
 - **Implementation notes:**
-  - Prune a small fraction first (e.g., top 1–5% most trigger-responsive channels), evaluate, increase if ASR remains high
-  - Always follow pruning with a short fine-tune pass on the clean budget to recover accuracy
-- **Expected effect:** Good middle-ground — removes structural backdoor pathways with minimal CA drop, when AC localizes the poison cleanly (BadNets-like).
+  - Optimize mask via adversarial objective on the 5% clean budget (2,500 images)
+  - Follow pruning with light fine-tuning to restore clean accuracy (CA)
+- **Expected effect:** Robust mid-severity defense — highly effective at eliminating backdoor pathways with minimal CA drop.
 
 ---
 
 ## 3. BAERASER-Style Unlearning (Heavy)
 
 - **Concept (from original BAERASER):** Recover the trigger via a max-entropy generator, then "unlearn" it via targeted gradient ascent on the recovered trigger pattern.
-- **Scope decision (locked):** Full BAERASER (training a generative trigger-recovery model) is likely too compute-heavy for the timeline. Implement a **"BAERASER-lite" surrogate**:
+- **Scope decision (locked):** Full BAERASER (training a generative trigger-recovery model) is compute-heavy. We implement a **"BAERASER-lite" surrogate**:
   - Skip full generative trigger reconstruction
   - Use a simplified procedure: combine a distillation step (teacher = lightly fine-tuned clean model) with a masking/gradient-ascent step on samples flagged as highly suspicious by AC
-  - Document explicitly in the paper: *"We implement a lightweight surrogate of BAERASER-style unlearning due to compute constraints; full generative trigger reconstruction is left as future work."* This sentence is reviewer-safe and avoids overclaiming.
-- **When triggered:** High AC severity + low STRIP entropy (both diagnostics fire) — see controller quadrant matrix.
-- **Implementation order:** Build this last, after fine-tuning and pruning are stable and working — it's the highest difficulty/debug-risk item.
+  - Document explicitly in the paper: *"We implement a lightweight surrogate of BAERASER-style unlearning due to compute constraints; full generative trigger reconstruction is left as future work."*
+- **When triggered:** High AC severity + behavioral signal present (high severity quadrant).
+- **Implementation order:** High effectiveness against explicit localized shortcuts.
 
 ---
 
-## 4. NAD / Knowledge Distillation (Conditional)
+## 4. NAD (Neural Attention Distillation)
 
-- **What it does:** Neural Attention Distillation — train the poisoned ("student") model to match the attention maps of a small teacher network trained/fine-tuned on clean data only, transferring benign feature focus rather than relying on representation surgery.
-- **When to add:** Only if experiments show a genuine AC-low/STRIP-low-entropy quadrant (i.e., AC misses the poison but STRIP catches behavioral lock-in). Most likely candidate attack: Label-Consistent, possibly low-poison-rate Blended.
-- **Why it fits that gap specifically:** Pruning needs AC to localize neurons — if AC found nothing, pruning has no target. NAD works from behavioral supervision instead, making it the natural fix when representation-space detection fails but behavior-space detection succeeds.
-- **Do not implement preemptively** — only after the AC vs STRIP scatter plot (described in `03_CONTROLLER_LOGIC.md`) confirms the quadrant is real in your data.
+- **What it does:** Neural Attention Distillation (Li et al., 2021) — trains the poisoned ("student") model to match the intermediate attention maps of a teacher network fine-tuned on the clean budget, aligning feature representations.
+- **Role in Suite:** Essential for stealthy or semantic triggers where AC representation clustering is weak but behavioral anomalies (STRIP) or distributed features are present.
+- **Why it fits:** Operates directly on attention map alignment across intermediate residual groups without requiring explicit neuron localization.
 
 ---
 
@@ -72,11 +71,11 @@ Run this sweep, varying one factor at a time:
 
 | Factor | Variants |
 |--------|----------|
-| Attacks | BadNets, Blended, Label-Consistent |
+| Attacks | BadNets, Blended, Silent Killer (or LC) |
 | Poison rates | 1%, 5%, 10% |
-| Trigger visibility (BadNets/Blended only) | Small (4×4 patch), Medium (8×8), Subtle (low-α blended) |
-| Seeds | 2-3 random seeds (2025 + at least two others) |
-| Defenses | (A) Fine-tune, (B) Prune+FT, (C) BAERASER-lite, (D) NAD — if earned |
+| Trigger visibility | Small (4×4 patch), Subtle (low-α blended), Semantic/Distributed |
+| Seeds | Single fixed seed: 2027 (no multi-seed ablation) |
+| Defenses | (A) FT, (B) ANP, (C) BAERASER-lite, (D) NAD |
 
 For every cell of this matrix, record:
 - `CA_before`, `ASR_before`

@@ -62,7 +62,7 @@ Doc and code have drifted: this doc previously said PCA with 10–50 components 
 | Blended | *(still TBD — see Stage C ablation results below)* | — | Global low-amplitude blend — variance likely spread across more directions; both the main (pr01/pr05/pr10) and low-count ablations now exist, but the decision is still intentionally open. The low-count sweep adds another wrinkle: ICA-10D silhouette is even noisier at low n (~0.13–0.28, non-monotonic), so neither ablation alone settles the PCA-2D vs ICA-10D choice |
 | Label-Consistent | PCA | 2 | Decided: LC uses the same visible 4×4 patch mechanism as BadNets (see `02_ATTACKS_AND_DATASETS.md`), so treated the same way. Revisit if Stage C data (silhouette/PDR) suggests otherwise — this was previously silently drifted to PCA-2D without being a deliberate, documented choice; it now is one. |
 
-**Blended DR ablation data (run, not yet decided — see `10_BLENDED_STAGE_C_STATUS.md`):**
+**Blended DR ablation data (run, not yet decided — see `blended_stage_C_status.md`):**
 
 | pr_tag | DR method | silhouette | suspicious_fraction | PDR | recall |
 |---|---|---|---|---|---|
@@ -150,7 +150,7 @@ This taxonomy is genuinely useful experimental content for the paper.
 
 ### ⚠️ Confirmed finding: STRIP fails on Blended at 10% poison rate, while AC succeeds strongly
 
-This was investigated directly (full detail in `10_BLENDED_STAGE_C_STATUS.md`)
+This was investigated directly (full detail in `blended_stage_C_status.md`)
 and is confirmed, not an artifact. The verification chain:
 
 1. **Ruled out mismatched conditions.** ASR and STRIP's TPR could have been
@@ -202,7 +202,7 @@ rate the model may lock onto a narrow blend-intensity band; STRIP's own
 overlay (default α=0.5) dilutes the baked-in trigger weight and, at pr10,
 appears to break the shortcut outright rather than merely adding noise. This
 mechanism is not required to state the finding above and is left as an
-optional follow-up (see `10_BLENDED_STAGE_C_STATUS.md` §4) — do not write the
+optional follow-up (see `blended_stage_C_status.md` §4) — do not write the
 mechanism into the paper as fact until it's tested directly (e.g. a
 `STRIP_ALPHA` sweep on the pr10 checkpoint).
 
@@ -276,4 +276,4 @@ AC → severity score (d) → controller → unlearning
 matches the `alpha_test` used for the reported ASR figure it's being compared
 against. Mismatched trigger strengths between the ASR baseline and the STRIP
 input pool is an easy silent error — verify explicitly (see
-`10_BLENDED_STAGE_C_STATUS.md` for the full check that caught this).
+`blended_stage_C_status.md` for the full check that caught this).

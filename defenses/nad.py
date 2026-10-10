@@ -53,6 +53,8 @@ v3 FIXES (review of the v2 file)
       Defender-computable; ASR columns (diag_fn) are diagnostics only.
     * Cost accounting: nad_full_pipeline(select_lr=True, search_sec=...) folds the
       teacher-lr search time into res["total_cost_sec"].
+    * res["teacher_final_hash"/"student_final_hash"/"teacher_student_distinct"]: proves the
+      student is not the teacher (equal CA on a finite test set can be a coincidence).
     * assert_baseline_ca(): a checkpoint does not store its normalisation constants;
       this checks the loaded model reproduces its recorded CA (run on the FULL test
       loader before switching to the report half).
@@ -535,6 +537,11 @@ def nad_full_pipeline(
                              epochs=nad_epochs, lr=lr, betas=betas, augment=augment,
                              amp=amp, verbose=verbose, **kwargs)
     res.update(tinfo)
+    # weight fingerprints: identical CA on a finite test set can be a coincidence; identical hashes cannot
+    res["teacher_final_hash"] = state_hash(teacher)
+    res["student_final_hash"] = state_hash(sanitized)
+    res["teacher_student_distinct"] = res["teacher_final_hash"] != res["student_final_hash"]
+    assert res["teacher_student_distinct"], "NAD student is bit-identical to the teacher"
     res["lr_search"] = linfo
     res["search_sec"] = round(search_sec, 2)
     res["total_cost_sec"] = round(search_sec + tinfo["teacher_ft_sec"] + res["distill_sec"], 2)
@@ -613,6 +620,7 @@ if __name__ == "__main__":
     assert torch.allclose(torch.norm(a, dim=(2, 3)), torch.ones(2, 1), atol=1e-4)
     # v3 checks
     assert res["interpretable"] is True and res["teacher_asr_flag"] is False
+    assert res["teacher_student_distinct"] is True
     out2, res2 = nad_full_pipeline(net, data, "cpu", eval_fn=lambda m: {"ca": 0.0, "asr": 0.99},
                                    teacher_epochs=1, nad_epochs=1, val_loader=val,
                                    max_ca_drop=1.0, verbose=False, select_lr=True,

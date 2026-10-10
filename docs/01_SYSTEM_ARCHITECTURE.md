@@ -80,9 +80,10 @@
   transforms.Compose([
       transforms.ToTensor(),
       transforms.Normalize(mean=[0.4914, 0.4822, 0.4465],
-                           std=[0.2023, 0.1994, 0.2010])
+                           std=[0.2470, 0.2435, 0.2616])
   ])
   ```
+  > **Normalization is locked to the values used in the attack notebooks (std = 0.2470, 0.2435, 0.2616).** The older 0.2023/0.1994/0.2010 values are not used anywhere. Every module (training, AC, STRIP, defenses, Grad-CAM, STL-10/Custom preprocessing) must import these constants from a single place in `core/`.
 
 ### 2. Attack Module
 - **BadNets:** Inject a 4×4 white pixel patch at bottom-right corner of target-class images. Simple, visually obvious.
@@ -124,11 +125,11 @@
 
 ### 6. Selective Unlearning Engine
 - See `04_DEFENSE_METHODS.md` for full spec
-- **Three methods (+ optional 4th):**
-  1. Fine-tuning (light) — for low-severity
-  2. Neuron Pruning + Fine-tuning — for medium-severity
-  3. BAERASER-lite — for high-severity structural embed + behavioral dominance
-  4. NAD (Neural Attention Distillation) — for stealthy/semantic triggers (AC-miss, STRIP-catch)
+- **Four methods across severity & behavioral regimes:**
+  1. Fine-tuning (FT) — for low-severity / baseline
+  2. ANP (Adversarial Neuron Pruning + FT) — for medium-severity / feature robustness
+  3. BAERASER-lite — for high-severity structural shortcuts
+  4. NAD (Neural Attention Distillation) — for stealthy/semantic distributed triggers
 
 ### 7. Evaluation & Verification Module
 - **STRIP:** Run on sanitized model to verify backdoor behavior is gone
@@ -162,7 +163,7 @@
 [ LANCZOS Resize ] — resize to 32×32 using PIL LANCZOS
        │
        ▼
-[ CIFAR-10 Normalization ] — μ = [0.4914, 0.4822, 0.4465], σ = [0.2023, 0.1994, 0.2010]
+[ CIFAR-10 Normalization ] — μ = [0.4914, 0.4822, 0.4465], σ = [0.2470, 0.2435, 0.2616]
 ```
 
 ---

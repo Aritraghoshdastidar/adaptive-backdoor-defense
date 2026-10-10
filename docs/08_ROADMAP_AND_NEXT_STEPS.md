@@ -11,9 +11,9 @@
 - Datasets: CIFAR-10 (train), STL-10 (cross-dataset eval), Custom ~800 images (real-world/deployment), GTSRB optional
 - Skip: CIFAR-100, exotic attacks (WaNet/Dynamic), exact unlearning (SISA), RL/learned controller
 - Detection: Activation Clustering (primary) + STRIP (verification) + Grad-CAM (visualization/TAR)
-- Defenses: Fine-tune, Prune+FT, BAERASER-lite (+ conditional NAD)
+- Defenses: Fine-tune (FT), ANP, BAERASER-lite, NAD
 - Controller: rule-based, calibrated thresholds, two-signal (AC + STRIP) quadrant design preferred
-- Seed: 2025, target class: 0 (airplane), clean defense budget: 2,500 fixed images
+- Seed: 2027 (single fixed seed, no multi-seed runs), target class: 0 (airplane), clean defense budget: 2,500 fixed images
 
 ---
 
@@ -39,7 +39,7 @@
 
 ### Stage B — Attacks + Baseline Poisoning
 1. Implement/re-verify BadNets, Blended, Label-Consistent poison generators
-2. Train poisoned models at 1%, 5%, 10% poison rates × 3 attacks × at least 2 seeds = 18+ checkpoints minimum
+2. Train poisoned models at 1%, 5%, 10% poison rates × 3 attacks, seed 2027 = 9 checkpoints
 3. Confirm ASR is meaningfully elevated for each — if an attack doesn't produce a real attack effect, stop and fix it before moving on
 
 ### Stage C — Detection
@@ -53,8 +53,8 @@
 3. Log controller decisions + reasoning for every condition
 
 ### Stage E — Defenses
-1. Implement/re-verify Fine-tune, Prune+FT, BAERASER-lite (+ NAD if earned)
-2. Run the full ablation matrix (attack × poison rate × defense × seed)
+1. Implement/re-verify Fine-tune (FT), ANP, BAERASER-lite, NAD
+2. Run the full ablation matrix (attack × poison rate × defense), seed 2027
 3. Collect CA/ASR before-after, compute cost, for every cell
 
 ### Stage F — Verification & Figures
@@ -94,8 +94,8 @@
 
 ## Definition of "Done" for the Redo (Before Writing the Paper)
 
-- [ ] All checkpoints trained with fixed seed(s), shared indices, documented configs
-- [ ] AC + STRIP run and logged for every condition (3 attacks × 3 poison rates × ≥2 seeds)
+- [ ] All checkpoints trained with fixed seed 2027, shared indices, documented configs
+- [ ] AC + STRIP run and logged for every condition (3 attacks × 3 poison rates, seed 2027)
 - [ ] AC vs STRIP scatter plot generated → 3 vs 4 regime decision made and documented
 - [ ] Controller thresholds calibrated and logged with reasoning
 - [ ] Full defense ablation matrix completed with CA/ASR before-after + compute cost

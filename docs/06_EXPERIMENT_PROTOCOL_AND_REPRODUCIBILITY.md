@@ -22,6 +22,7 @@ Before running anything, these must be fixed and recorded:
 - **Poison rate:** Start with 5%, then add 1% and 10%
 - **Trigger size/strength:** small vs visible (document exact pixel/alpha values used)
 - **Random seed:** `2027` (write it down for every run — a single fixed global seed, no multi-seed ablation)
+- **Normalization:** mean = (0.4914, 0.4822, 0.4465), std = (0.2470, 0.2435, 0.2616) — single shared constant in `core/`, used for training and every evaluation
 - **Model + dataset version:** ResNet-18 + CIFAR-10 (pin library versions in `requirements.txt`)
 
 ---
@@ -110,7 +111,7 @@ from scripts.metrics import evaluate_model
 **Process notes:**
 - Daily 15-minute stand-up to sync checkpoints and next steps
 - Merge only via PR, to keep experiments reproducible
-- Store checkpoints on shared Drive, named `[attack]_[poison_pct]_[epoch]_[seed].pth`
+- Store checkpoints on shared Drive, named `[attack]_[poison_rate]_[seed].pth` (e.g. `badnets_5pct_seed2027.pth`)
 
 ### Immediate "Quick Fix" Steps (Do This First, This Week)
 1. **Standardize the eval function** — pick the best-written `evaluate_model()` from the team, everyone copies that exact function. Ensures everyone tests on the same 10,000 CIFAR test images with `target_class = 0`.
@@ -125,7 +126,7 @@ from scripts.metrics import evaluate_model
 
 ## Per-Run Logging Checklist (Detection → Decision → Defense → Verification)
 
-For every single experimental condition (attack × poison-rate × seed), record:
+For every single experimental condition (attack × poison rate, fixed seed 2027), record:
 
 **Baseline (before any defense):**
 - `CA_before`, `ASR_before`
@@ -175,6 +176,7 @@ The controller should actively change its mitigation behavior across these tiers
 - **Ablations:** sweeps across varying poison rates (1%, 5%, 10%) at a single fixed seed (`2027`)
 - **Clear reporting:** clean before/after comparison tables
 - **Honesty:** open evaluation of failure cases — don't hide them, they build credibility
+- **Limitation to disclose:** all results are from a single seed (2027). State this explicitly in the Limitations section; differences between defenses should be reported with test-set confidence intervals, not as seed-averaged means.
 
 ---
 
