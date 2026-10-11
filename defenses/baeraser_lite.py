@@ -8,7 +8,8 @@ Design (unchanged from the previous version):
   - Attack-specific TriggerOperator controls how a recovered trigger is applied.
   - BadNets: localized 4x4 patch.
   - Blended: full-image key pattern, x'=(1-alpha)x+alpha*k.
-  - Silent Killer: full-image additive perturbation, x'=clip(x+delta).
+  - Silent Killer: full-image additive perturbation, x'=clip(x+delta), delta=(2t-1)*linf
+    in generator mode (see v4 note below).
 
 WHAT CHANGED IN THIS VERSION AND WHY:
 
@@ -110,6 +111,24 @@ WHAT CHANGED IN THIS VERSION AND WHY:
           Use `BlendedTriggerOperator(alpha=...)` with a MISMATCHED alpha as an
           additional robustness test.
 
+  9. v4 FIXES (Silent Killer support; Blended / BadNets behaviour is UNCHANGED):
+       a. SilentKillerTriggerOperator has a GENERATOR MODE, `linf=eps`: the recovered
+          trigger t in [0,1] is mapped to a signed, bounded delta = (2t-1)*eps
+          (`to_delta` / `from_delta` expose the mapping), so a sigmoid generator can only
+          propose perturbations inside the imperceptibility budget the defender is told
+          (SK: 16/255). Without it, a generator output was read as a ONE-SIDED delta in
+          [0,1] (~+127/255 at initialisation, up to 16x SK's budget): a gross brightening,
+          not an eps-bounded perturbation.
+       b. `mean=` / `std=` let the operator use the VICTIM's normaliser. Silent Killer
+          victims use first-256-training-image statistics, not CIFAR_MEAN / CIFAR_STD.
+          Falls back to the module constants when not given.
+       c. `linf=None` keeps the legacy raw-delta mode (trigger IS the delta); it is what
+          universal_adv_vulnerability uses. Same maths as before in raw pixel space.
+       d. Numerically identical to the local fallback operator the SK notebook defined
+          while the repo copy predated this fix, so earlier SK numbers do not change.
+       e. In generator mode the stored recovered trigger is t in [0,1] (NOT a raw delta);
+          convert with operator.to_delta(t) before comparing with a true delta.
+
 IMPORTANT (unchanged):
   - This is the project's BAERASER-lite adaptation, not a claim of exact
     reproduction of the original BAERASER paper implementation. It performs
@@ -164,6 +183,8 @@ CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR_STD = (0.2470, 0.2435, 0.2616)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+__version__ = "v4 (v3 Blended protocol + Silent Killer linf operator)"
 
 SEED = 2027
 TARGET_CLASS = 0
@@ -352,45 +373,71 @@ class BlendedTriggerOperator(TriggerOperator):
 
 
 class SilentKillerTriggerOperator(TriggerOperator):
-    """Silent Killer additive full-image trigger: x'=clip(x+delta).
+    """Silent Killer additive full-image trigger: x'=clip(x+delta) in RAW pixel space.
 
-    `trigger` is interpreted as a RAW-space additive perturbation. For
-    normalized inputs, the perturbation is converted to normalized units
-    using CIFAR std before addition.
+    TWO MODES (v4, SK-specific fix):
+
+      linf=None  (legacy / raw-delta mode)
+          `trigger` IS the raw-space delta (any sign, any magnitude the caller supplies).
+          Correct for callers that already hold a delta, e.g. universal_adv_vulnerability.
+          DO NOT feed a sigmoid generator output through this mode: it would be read as a
+          one-sided delta in [0,1] (up to +255/255, ~16x SK's budget; ~+127/255 at the
+          generator's initialisation) -> the "recovered trigger" is a gross brightening,
+          not an eps-bounded perturbation.
+
+      linf=eps   (generator mode, use this for trigger RECOVERY)
+          `trigger` is the generator output t in [0,1]; delta = (2t-1)*eps, i.e. signed and
+          bounded by the imperceptibility budget the defender is told (SK: 16/255).
+          This reproduces TriggerAdditive.inject + the victim's normaliser exactly.
+
+    mean/std: the normaliser the VICTIM was trained with. Silent Killer victims use the
+    first-256-training-image statistics (NOT CIFAR_MEAN/CIFAR_STD). Falls back to the
+    module constants when not given.
     """
 
     name = "silent_killer"
 
-    def __init__(self, image_shape=(3, 32, 32), clip_raw=True):
-        self.image_shape = image_shape
+    def __init__(self, image_shape=(3, 32, 32), clip_raw=True, linf=None, mean=None, std=None):
+        self.image_shape = tuple(image_shape)
         self.clip_raw = clip_raw
+        self.linf = None if linf is None else float(linf)
+        as_t = lambda v: None if v is None else torch.as_tensor(v, dtype=torch.float32).view(1, 3, 1, 1).clone()
+        self._mean, self._std = as_t(mean), as_t(std)
 
     def trigger_shape(self):
         return self.image_shape
 
+    def _stats(self, ref):
+        mean = self._mean if self._mean is not None else torch.tensor(CIFAR_MEAN).view(1, 3, 1, 1)
+        std = self._std if self._std is not None else torch.tensor(CIFAR_STD).view(1, 3, 1, 1)
+        return mean.to(ref.device, ref.dtype), std.to(ref.device, ref.dtype)
+
+    def to_delta(self, t):
+        return t if self.linf is None else (2.0 * t - 1.0) * self.linf
+
+    def from_delta(self, d):
+        if self.linf is None:
+            return d
+        return (d / (2.0 * self.linf) + 0.5).clamp(0.0, 1.0)
+
     def apply(self, images, trigger):
         if trigger.dim() == 3:
             trigger = trigger.unsqueeze(0)
-        trigger = trigger.to(images.device)
-
-        # Interpret recovered trigger as a RAW-space delta around zero.
-        std = torch.tensor(CIFAR_STD, device=images.device).view(1, 3, 1, 1)
-        delta_norm = trigger / std
-        out = images + delta_norm
-
+        trigger = trigger.to(images.device, images.dtype)
+        delta = self.to_delta(trigger)
+        mean, std = self._stats(images)
         if self.clip_raw:
-            mean = torch.tensor(CIFAR_MEAN, device=images.device).view(1, 3, 1, 1)
-            lo = (0.0 - mean) / std
-            hi = (1.0 - mean) / std
-            out = torch.maximum(torch.minimum(out, hi), lo)
-        return out
+            raw = (images * std + mean + delta).clamp(0.0, 1.0)
+            return (raw - mean) / std
+        return images + delta / std
 
     def metadata(self):
-        return {
-            "trigger_type": self.name,
-            "trigger_shape": list(self.image_shape),
-            "clip_raw": self.clip_raw,
-        }
+        md = {"trigger_type": self.name, "trigger_shape": list(self.image_shape),
+              "clip_raw": self.clip_raw, "mode": "raw_delta" if self.linf is None else "generator_linf"}
+        if self.linf is not None:
+            md.update(linf_budget=self.linf, linf_budget_255=round(self.linf * 255, 3),
+                      param="delta=(2t-1)*linf")
+        return md
 
 
 # ---------------------------------------------------------------------------
