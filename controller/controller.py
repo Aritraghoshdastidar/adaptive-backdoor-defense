@@ -313,6 +313,10 @@ def calibrate_thresholds(
                     )
                     total_score += score
                     n_valid += 1
+                else:
+                    # Defense failed or unavailable: assign unmitigated penalty
+                    total_score += 100.0
+                    n_valid += 1
 
             if n_valid > 0:
                 avg_score = total_score / n_valid
@@ -338,6 +342,8 @@ class StrategyResult:
     avg_delta_ca: float
     avg_compute_cost: float
     avg_formal_score: float
+    fails: int = 0
+    n_evaluated: int = 0
     per_condition: List[Dict] = field(default_factory=list)
 
 
@@ -348,19 +354,6 @@ def evaluate_strategies(
 ) -> Dict[str, StrategyResult]:
     """
     Compare the adaptive controller against fixed-defense baselines and oracle.
-
-    This produces the HEADLINE RESULT of the paper (Table/Figure):
-
-    Strategy              | Avg ASR After | Avg CA After | Avg Cost | Score
-    ──────────────────────|───────────────|──────────────|──────────|──────
-    Always-FT             |     X%        |     X%       |   X      |  X
-    Always-ANP            |     X%        |     X%       |   X      |  X
-    Always-NAD            |     X%        |     X%       |   X      |  X
-    Always-BaEraser-lite  |     X%        |     X%       |   X      |  X
-    Adaptive Controller   |     X%        |     X%       |   X      |  X
-    Oracle (best per-cell)|     X%        |     X%       |   X      |  X
-
-    Returns dict mapping strategy name to StrategyResult.
     """
     if thresholds is None:
         thresholds = ControllerThresholds()
@@ -400,6 +393,20 @@ def evaluate_strategies(
                     "delta_ca": row["ca_before"] - row["ca_after"],
                     "compute_cost": row["compute_cost_normalized"],
                     "formal_score": score,
+                    "failed": row["asr_after"] > 10.0,
+                })
+            else:
+                # Defense unavailable / failed on this condition
+                per_condition.append({
+                    "attack": attack,
+                    "condition": condition,
+                    "defense": defense,
+                    "asr_after": 100.0,
+                    "ca_after": 80.0,
+                    "delta_ca": 0.0,
+                    "compute_cost": 1.0,
+                    "formal_score": 100.0,
+                    "failed": True,
                 })
 
         if per_condition:
@@ -410,6 +417,8 @@ def evaluate_strategies(
                 avg_delta_ca=_mean([r["delta_ca"] for r in per_condition]),
                 avg_compute_cost=_mean([r["compute_cost"] for r in per_condition]),
                 avg_formal_score=_mean([r["formal_score"] for r in per_condition]),
+                fails=sum(1 for r in per_condition if r["failed"]),
+                n_evaluated=len(per_condition),
                 per_condition=per_condition,
             )
 
@@ -449,6 +458,21 @@ def evaluate_strategies(
                 "delta_ca": row["ca_before"] - row["ca_after"],
                 "compute_cost": row["compute_cost_normalized"],
                 "formal_score": score,
+                "failed": row["asr_after"] > 10.0,
+            })
+        else:
+            per_condition_adaptive.append({
+                "attack": det["attack"],
+                "condition": det["poison_condition"],
+                "defense": decision.defense_chosen,
+                "quadrant": decision.quadrant,
+                "reason": decision.reason,
+                "asr_after": 100.0,
+                "ca_after": 80.0,
+                "delta_ca": 0.0,
+                "compute_cost": 1.0,
+                "formal_score": 100.0,
+                "failed": True,
             })
 
     if per_condition_adaptive:
@@ -459,6 +483,8 @@ def evaluate_strategies(
             avg_delta_ca=_mean([r["delta_ca"] for r in per_condition_adaptive]),
             avg_compute_cost=_mean([r["compute_cost"] for r in per_condition_adaptive]),
             avg_formal_score=_mean([r["formal_score"] for r in per_condition_adaptive]),
+            fails=sum(1 for r in per_condition_adaptive if r["failed"]),
+            n_evaluated=len(per_condition_adaptive),
             per_condition=per_condition_adaptive,
         )
 
@@ -499,6 +525,21 @@ def evaluate_strategies(
                 "delta_ca": row["ca_before"] - row["ca_after"],
                 "compute_cost": row["compute_cost_normalized"],
                 "formal_score": score,
+                "failed": row["asr_after"] > 10.0,
+            })
+        else:
+            per_condition_old.append({
+                "attack": det["attack"],
+                "condition": det["poison_condition"],
+                "defense": decision.defense_chosen,
+                "quadrant": decision.quadrant,
+                "reason": decision.reason,
+                "asr_after": 100.0,
+                "ca_after": 80.0,
+                "delta_ca": 0.0,
+                "compute_cost": 1.0,
+                "formal_score": 100.0,
+                "failed": True,
             })
 
     if per_condition_old:
@@ -509,6 +550,8 @@ def evaluate_strategies(
             avg_delta_ca=_mean([r["delta_ca"] for r in per_condition_old]),
             avg_compute_cost=_mean([r["compute_cost"] for r in per_condition_old]),
             avg_formal_score=_mean([r["formal_score"] for r in per_condition_old]),
+            fails=sum(1 for r in per_condition_old if r["failed"]),
+            n_evaluated=len(per_condition_old),
             per_condition=per_condition_old,
         )
 
@@ -543,6 +586,19 @@ def evaluate_strategies(
                 "delta_ca": best_row["ca_before"] - best_row["ca_after"],
                 "compute_cost": best_row["compute_cost_normalized"],
                 "formal_score": best_score,
+                "failed": best_row["asr_after"] > 10.0,
+            })
+        else:
+            per_condition_oracle.append({
+                "attack": attack,
+                "condition": condition,
+                "defense": "None",
+                "asr_after": 100.0,
+                "ca_after": 80.0,
+                "delta_ca": 0.0,
+                "compute_cost": 1.0,
+                "formal_score": 100.0,
+                "failed": True,
             })
 
     if per_condition_oracle:
@@ -553,6 +609,8 @@ def evaluate_strategies(
             avg_delta_ca=_mean([r["delta_ca"] for r in per_condition_oracle]),
             avg_compute_cost=_mean([r["compute_cost"] for r in per_condition_oracle]),
             avg_formal_score=_mean([r["formal_score"] for r in per_condition_oracle]),
+            fails=sum(1 for r in per_condition_oracle if r["failed"]),
+            n_evaluated=len(per_condition_oracle),
             per_condition=per_condition_oracle,
         )
 
@@ -561,14 +619,14 @@ def evaluate_strategies(
 
 # ── Output / Logging ──────────────────────────────────────────────────────────
 
-def print_strategy_comparison(results: Dict[str, StrategyResult]):
-    """Print the headline comparison table."""
-    print("\n" + "=" * 90)
-    print("CONTROLLER vs. BASELINES vs. ORACLE — Headline Comparison")
-    print("=" * 90)
-    print(f"{'Strategy':<25} {'Avg ASR↓':>10} {'Avg CA↑':>10} {'Avg ΔCA':>10} "
-          f"{'Avg Cost':>10} {'Score↓':>10}")
-    print("-" * 90)
+def print_strategy_comparison(results: Dict[str, StrategyResult], title: str = "Headline Comparison"):
+    """Print the headline comparison table with decoupled metrics."""
+    print("\n" + "=" * 95)
+    print(f"CONTROLLER vs. BASELINES vs. ORACLE — {title}")
+    print("=" * 95)
+    print(f"{'Strategy':<24} {'Avg ASR↓':>9} {'Avg CA↑':>9} {'Avg ΔCA':>9} "
+          f"{'Avg Cost':>9} {'Fails (>10%)':>14} {'Score↓':>9}")
+    print("-" * 95)
 
     # Print in a fixed order
     order = [
@@ -578,12 +636,14 @@ def print_strategy_comparison(results: Dict[str, StrategyResult]):
     for name in order:
         if name in results:
             r = results[name]
-            print(f"{r.strategy_name:<25} {r.avg_asr_after:>9.1f}% {r.avg_ca_after:>9.1f}% "
-                  f"{r.avg_delta_ca:>9.2f}pp {r.avg_compute_cost:>9.2f} "
-                  f"{r.avg_formal_score:>9.2f}")
+            fail_str = f"{r.fails}/{r.n_evaluated}"
+            print(f"{r.strategy_name:<24} {r.avg_asr_after:>8.1f}% {r.avg_ca_after:>8.1f}% "
+                  f"{r.avg_delta_ca:>8.2f}pp {r.avg_compute_cost:>8.2f} "
+                  f"{fail_str:>13} {r.avg_formal_score:>9.2f}")
 
-    print("=" * 90)
-    print("Score = α·ASR + β·ΔCA + γ·C×100  (lower is better)")
+    print("=" * 95)
+    print("Score = α·ASR + β·ΔCA + γ·C×100  (lower is better; failed cells penalized at ASR=100%)")
+    print()
     print()
 
 
@@ -610,6 +670,8 @@ def save_strategy_results(results: Dict[str, StrategyResult], filepath: str):
             "avg_delta_ca": r.avg_delta_ca,
             "avg_compute_cost": r.avg_compute_cost,
             "avg_formal_score": r.avg_formal_score,
+            "fails": r.fails,
+            "n_evaluated": r.n_evaluated,
             "per_condition": r.per_condition,
         }
     with open(filepath, "w") as f:
@@ -642,18 +704,17 @@ if __name__ == "__main__":
         {"attack": "BadNets", "poison_condition": "10%",
          "ac_silhouette": 0.44, "ac_pdr": 97.15, "ac_suspicious_fraction": 0.48,
          "strip_tpr": 33.2, "strip_fpr": 4.0, "strip_mu": 0.69, "strip_sigma": 0.19},
+        # Blended STRIP TPR: CORRECTED to verified values from blended_stage_C_status.md
         {"attack": "Blended", "poison_condition": "1%",
          "ac_silhouette": 0.38, "ac_pdr": 11.16, "ac_suspicious_fraction": 0.27,
-         "strip_tpr": 79.6, "strip_fpr": 1.2, "strip_mu": 0.61, "strip_sigma": 0.18},
+         "strip_tpr": 28.0, "strip_fpr": 1.2, "strip_mu": 0.61, "strip_sigma": 0.18},
         {"attack": "Blended", "poison_condition": "5%",
          "ac_silhouette": 0.54, "ac_pdr": 99.76, "ac_suspicious_fraction": 0.33,
-         "strip_tpr": 92.8, "strip_fpr": 2.4, "strip_mu": 0.67, "strip_sigma": 0.18},
+         "strip_tpr": 40.8, "strip_fpr": 2.4, "strip_mu": 0.67, "strip_sigma": 0.18},
         {"attack": "Blended", "poison_condition": "10%",
          "ac_silhouette": 0.64, "ac_pdr": 99.96, "ac_suspicious_fraction": 0.50,
-         "strip_tpr": 68.0, "strip_fpr": 1.6, "strip_mu": 0.68, "strip_sigma": 0.19},
-        {"attack": "Silent Killer", "poison_condition": "0.5%",
-         "ac_silhouette": 0.33, "ac_pdr": 4.32, "ac_suspicious_fraction": 0.50,
-         "strip_tpr": 52.4, "strip_fpr": 2.4, "strip_mu": 0.78, "strip_sigma": 0.20},
+         "strip_tpr": 0.0, "strip_fpr": 1.6, "strip_mu": 0.68, "strip_sigma": 0.19},
+        # SK 0.5% removed: no defense data exists
         {"attack": "Silent Killer", "poison_condition": "1%",
          "ac_silhouette": 0.33, "ac_pdr": 15.0, "ac_suspicious_fraction": 0.50,
          "strip_tpr": 8.4, "strip_fpr": 2.8, "strip_mu": 0.72, "strip_sigma": 0.19},

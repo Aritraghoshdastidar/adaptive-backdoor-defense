@@ -1,0 +1,30 @@
+Attack,Poison Condition,Defense,CA Before (%),ASR Before (%),CA After (%),ASR After (%),Compute Cost (sec),Flag
+BadNets,1%,FT,90.28,82.7,88.62,18.7,18.0,
+BadNets,1%,ANP,90.28,82.7,86.45,0.2,750.0,
+BadNets,1%,NAD,90.28,82.7,86.51,1.9,256.0,
+BadNets,1%,BaEraser-lite,90.28,82.7,87.26,0.8,216.0,
+BadNets,5%,FT,89.81,95.4,88.74,24.2,18.0,
+BadNets,5%,ANP,89.81,95.4,86.95,0.4,750.0,
+BadNets,5%,NAD,89.81,95.4,85.09,1.1,256.0,
+BadNets,5%,BaEraser-lite,89.81,95.4,86.7,0.9,216.0,
+BadNets,10%,FT,89.59,96.1,88.41,6.5,18.0,
+BadNets,10%,ANP,89.59,96.1,86.29,0.4,750.0,
+BadNets,10%,NAD,89.59,96.1,84.76,1.3,256.0,
+BadNets,10%,BaEraser-lite,89.59,96.1,86.72,0.9,216.0,
+Silent Killer,1%,FT,91.88,89.33,91.97,81.6,18.0,
+Silent Killer,1%,ANP,91.88,89.33,89.12,85.73,750.0,
+Silent Killer,1%,NAD,91.88,89.33,89.63,45.6,256.0,teacher_backdoored
+Silent Killer,5%,FT,90.91,100.0,90.64,100.0,18.0,
+Silent Killer,5%,ANP,90.91,100.0,86.09,100.0,750.0,
+Silent Killer,5%,NAD,90.91,100.0,87.87,71.07,256.0,teacher_backdoored
+Blended,1%,FT,94.95,99.99,94.2,99.99,18.0,
+Blended,1%,ANP,94.95,99.99,89.95,0.06,750.0,
+Blended,1%,NAD,94.95,99.99,90.29,0.74,256.0,teacher_backdoored_pr01
+Blended,1%,BaEraser-lite,94.95,99.99,92.01,0.15,216.0,
+Blended,5%,FT,94.81,100.0,93.73,100.0,18.0,
+Blended,5%,ANP,94.81,100.0,92.87,1.88,750.0,
+Blended,5%,NAD,94.81,100.0,90.8,0.22,256.0,
+Blended,5%,BaEraser-lite,94.81,100.0,91.17,1.33,216.0,
+Blended,10%,FT,94.48,100.0,93.04,100.0,18.0,
+Blended,10%,ANP,94.48,100.0,91.6,0.21,750.0,
+Blended,10%,BaEraser-lite,94.48,100.0,92.77,16.73,216.0,selection_failure

@@ -1,0 +1,21 @@
+% Table 2: Per-Condition Controller Invocations and Post-Defense Outcomes
+\begin{table*}[t]
+\centering
+\small
+\caption{Per-condition detector signals, assigned operational quadrants, defense selected by the Adaptive Controller, and resulting post-defense validation metrics.}
+\label{tab:controller_decisions}
+\begin{tabular}{ll | cc | l | l | cccc}
+\hline
+\textbf{Attack} & \textbf{Rate} & \textbf{AC Sil.} & \textbf{STRIP TPR} & \textbf{Assigned Quadrant} & \textbf{Selected Defense} & \textbf{Baseline ASR} & \textbf{Defended ASR} & \textbf{Defended CA} & \textbf{Status} \\
+\hline
+BadNets & 1% & 0.32 & 7.6\% & AC-LOW/STRIP-LOW & \textbf{ANP} & 82.7\% & 0.20\% & 86.5\% & \checkmark Remediated \\
+BadNets & 5% & 0.37 & 34.4\% & AC-LOW/STRIP-HIGH & \textbf{NAD} & 95.4\% & 1.10\% & 85.1\% & \checkmark Remediated \\
+BadNets & 10% & 0.44 & 33.2\% & AC-HIGH/STRIP-HIGH & \textbf{BaEraser-lite} & 96.1\% & 0.90\% & 86.7\% & \checkmark Remediated \\
+Blended & 1% & 0.38 & 28.0\% & AC-LOW/STRIP-LOW & \textbf{ANP} & 100.0\% & 0.06\% & 90.0\% & \checkmark Remediated \\
+Blended & 5% & 0.54 & 40.8\% & AC-HIGH/STRIP-HIGH & \textbf{BaEraser-lite} & 100.0\% & 1.33\% & 91.2\% & \checkmark Remediated \\
+Blended & 10% & 0.64 & 0.0\% & AC-HIGH/STRIP-LOW & \textbf{ANP} & 100.0\% & 0.21\% & 91.6\% & \checkmark Remediated \\
+Silent Killer & 1% & 0.33 & 8.4\% & AC-LOW/STRIP-LOW & \textbf{ANP} & 89.3\% & 85.73\% & 89.1\% & \textbf{SK Persistent} \\
+Silent Killer & 5% & 0.37 & 85.6\% & AC-LOW/STRIP-HIGH & \textbf{NAD} & 100.0\% & 71.07\% & 87.9\% & \textbf{SK Persistent} \\
+\hline
+\end{tabular}
+\end{table*}

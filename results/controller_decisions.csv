@@ -1,0 +1,9 @@
+attack,poison_condition,ac_silhouette,ac_pdr,ac_suspicious_fraction,strip_tpr,strip_fpr,strip_mu,strip_sigma,ac_state,strip_state,quadrant,defense_chosen,reason,formal_score
+BadNets,1%,0.32,9.72,0.46,7.6,1.6,0.64,0.16,LOW,LOW,AC-LOW/STRIP-LOW,ANP,"AC silhouette=0.32<0.4 (LOW), STRIP TPR=7.6%<30.0% (LOW) → [POLICY FIX] low evidence ≠ low severity → floor defense ANP",
+BadNets,5%,0.37,75.97,0.35,34.4,1.6,0.69,0.17,LOW,HIGH,AC-LOW/STRIP-HIGH,NAD,"AC silhouette=0.37<0.4 (LOW), STRIP TPR=34.4%≥30.0% (HIGH) → AC blind but behavioral signal present → attention distillation",
+BadNets,10%,0.44,97.15,0.48,33.2,4.0,0.69,0.19,HIGH,HIGH,AC-HIGH/STRIP-HIGH,BaEraser-lite,"AC silhouette=0.44≥0.4 (HIGH), STRIP TPR=33.2%≥30.0% (HIGH) → both signals fire → heavy unlearning",
+Blended,1%,0.38,11.16,0.27,28.0,1.2,0.61,0.18,LOW,LOW,AC-LOW/STRIP-LOW,ANP,"AC silhouette=0.38<0.4 (LOW), STRIP TPR=28.0%<30.0% (LOW) → [POLICY FIX] low evidence ≠ low severity → floor defense ANP",
+Blended,5%,0.54,99.76,0.33,40.8,2.4,0.67,0.18,HIGH,HIGH,AC-HIGH/STRIP-HIGH,BaEraser-lite,"AC silhouette=0.54≥0.4 (HIGH), STRIP TPR=40.8%≥30.0% (HIGH) → both signals fire → heavy unlearning",
+Blended,10%,0.64,99.96,0.5,0.0,1.6,0.68,0.19,HIGH,LOW,AC-HIGH/STRIP-LOW,ANP,"AC silhouette=0.64≥0.4 (HIGH), STRIP TPR=0.0%<30.0% (LOW) → structurally embedded, behavioral dominance weak → pruning",
+Silent Killer,1%,0.33,15.0,0.5,8.4,2.8,0.72,0.19,LOW,LOW,AC-LOW/STRIP-LOW,ANP,"AC silhouette=0.33<0.4 (LOW), STRIP TPR=8.4%<30.0% (LOW) → [POLICY FIX] low evidence ≠ low severity → floor defense ANP",
+Silent Killer,5%,0.37,69.13,0.41,85.6,1.6,0.72,0.17,LOW,HIGH,AC-LOW/STRIP-HIGH,NAD,"AC silhouette=0.37<0.4 (LOW), STRIP TPR=85.6%≥30.0% (HIGH) → AC blind but behavioral signal present → attention distillation",

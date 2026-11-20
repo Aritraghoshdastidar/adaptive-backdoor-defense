@@ -1,0 +1,21 @@
+% Table 1: Overall Defense Strategy Comparison (Camera-Ready)
+\begin{table*}[t]
+\centering
+\small
+\caption{Performance comparison of defense strategies across solvable conditions (BadNets + Blended) and the full evaluation suite (including Silent Killer stress-test). Lower ASR, lower $\Delta$CA, and lower Cost indicate superior defense utility. Failed/unavailable defenses are penalized at ASR=100\%.}
+\label{tab:strategy_comparison}
+\begin{tabular}{l | cccc | cccc}
+\hline
+\multirow{2}{*}{\textbf{Defense Strategy}} & \multicolumn{4}{c|}{\textbf{Solvable Attacks (6 conditions)}} & \multicolumn{4}{c}{\textbf{Full Evaluation Suite (8 conditions)}} \\
+ & \textbf{Avg ASR} $\downarrow$ & \textbf{Avg CA} $\uparrow$ & \textbf{Avg Cost} $\downarrow$ & \textbf{Fails} ($>10\%$) & \textbf{Avg ASR} $\downarrow$ & \textbf{Avg CA} $\uparrow$ & \textbf{Avg Cost} $\downarrow$ & \textbf{Fails} ($>10\%$) \\
+\hline
+Always Fine-Tuning (FT) & 58.2\% & 91.1\% & 0.03 & 5/6 & 66.4\% & 91.2\% & 0.03 & 7/8 \\
+Always Adv. Neuron Pruning (ANP) & 0.5\% & 89.0\% & 1.00 & 0/6 & 23.6\% & 88.7\% & 1.00 & 2/8 \\
+Always Attention Distillation (NAD) & 17.5\% & 86.2\% & 0.52 & 1/6 & 27.7\% & 86.9\% & 0.50 & 3/8 \\
+Always BaEraser-lite & 3.5\% & 89.4\% & 0.36 & 1/6 & 27.6\% & 87.1\% & 0.52 & 3/8 \\
+Adaptive Controller (Pre-Fix Policy) & 20.4\% & 89.6\% & 0.37 & 2/6 & 34.4\% & 89.7\% & 0.33 & 4/8 \\
+\textbf{Adaptive Controller (Proposed)} & \textbf{0.6\%} & 88.5\% & 0.69 & \textbf{0/6} & \textbf{20.1\%} & 88.5\% & 0.70 & \textbf{2/8} \\
+Oracle Defense Selection & 0.5\% & 89.2\% & 0.48 & 0/6 & 15.0\% & 89.1\% & 0.47 & 2/8 \\
+\hline
+\end{tabular}
+\end{table*}
