@@ -55,18 +55,17 @@ DETECTION_DATA = [
     {"attack": "BadNets", "poison_condition": "10%",
      "ac_silhouette": 0.44, "ac_pdr": 97.15, "ac_suspicious_fraction": 0.48,
      "strip_tpr": 33.2, "strip_fpr": 4.0, "strip_mu": 0.69, "strip_sigma": 0.19},
-    # Blended STRIP TPR: CORRECTED to verified values from blended_stage_C_status.md
-    # (28.0/40.8/0.0 at n_samples=500, alpha_test=0.1). Previous values (79.6/92.8/68.0)
-    # were from a stale/mismatched STRIP run.
+    # Blended STRIP TPR: CORRECTED to verified values from blended_finalNB.ipynb / blended_stage_C_status.md
+    # (28.0/40.8/0.0 at n_samples=500, alpha_test=0.1).
     {"attack": "Blended", "poison_condition": "1%",
      "ac_silhouette": 0.38, "ac_pdr": 11.16, "ac_suspicious_fraction": 0.27,
-     "strip_tpr": 28.0, "strip_fpr": 1.2, "strip_mu": 0.61, "strip_sigma": 0.18},
+     "strip_tpr": 28.0, "strip_fpr": 2.4, "strip_mu": 0.4298, "strip_sigma": 0.1467, "strip_threshold": 0.0885},
     {"attack": "Blended", "poison_condition": "5%",
      "ac_silhouette": 0.54, "ac_pdr": 99.76, "ac_suspicious_fraction": 0.33,
-     "strip_tpr": 40.8, "strip_fpr": 2.4, "strip_mu": 0.67, "strip_sigma": 0.18},
+     "strip_tpr": 40.8, "strip_fpr": 1.6, "strip_mu": 0.4662, "strip_sigma": 0.1568, "strip_threshold": 0.1014},
     {"attack": "Blended", "poison_condition": "10%",
      "ac_silhouette": 0.64, "ac_pdr": 99.96, "ac_suspicious_fraction": 0.50,
-     "strip_tpr": 0.0, "strip_fpr": 1.6, "strip_mu": 0.68, "strip_sigma": 0.19},
+     "strip_tpr": 0.0, "strip_fpr": 2.0, "strip_mu": 0.4671, "strip_sigma": 0.1562, "strip_threshold": 0.1037},
     # SK 0.5% REMOVED: no defense data exists for this condition.
     # Keeping it would produce partial-matrix averages. 8 conditions remain.
     {"attack": "Silent Killer", "poison_condition": "1%",

@@ -1,0 +1,21 @@
+% Table 4: Leave-One-Out Cross-Validation (LOOCV) of Adaptive Controller
+\begin{table}[t]
+\centering
+\small
+\caption{Leave-One-Out Cross-Validation (LOOCV) across solvable attack conditions. Each row reports thresholds calibrated on the remaining $N-1=5$ conditions and tested on the unseen held-out condition.}
+\label{tab:loocv}
+\begin{tabular}{lccccr}
+\toprule
+Held-Out Attack & $\tau_{\text{ac}}$ & $\tau_{\text{strip}}$ (\%) & Selected Defense & Post-Defense ASR (\%) & Agr. \\
+\midrule
+BadNets 1% & 0.25 & 10.0 & \textsf{ANP} & 0.20\% & \checkmark \\
+BadNets 5% & 0.25 & 10.0 & \textsf{BaEraser-lite} & 0.90\% & \checkmark \\
+BadNets 10% & 0.25 & 10.0 & \textsf{BaEraser-lite} & 0.90\% & \checkmark \\
+Blended 1% & 0.25 & 10.0 & \textsf{BaEraser-lite} & 0.15\% & \checkmark \\
+Blended 5% & 0.25 & 10.0 & \textsf{BaEraser-lite} & 1.33\% & \checkmark \\
+Blended 10% & 0.25 & 10.0 & \textsf{ANP} & 0.21\% & \checkmark \\
+\midrule
+\textbf{LOOCV Mean} & --- & --- & --- & \textbf{0.61\%} & \textbf{6/6} \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,7 @@
+attack,condition,calib_tau_ac,calib_tau_strip,defense_chosen,quadrant,asr_after,cost,delta_ca,matches_full
+BadNets,1%,0.25,10.0,ANP,AC-HIGH/STRIP-LOW,0.2,1.0,3.8299999999999983,True
+BadNets,5%,0.25,10.0,BaEraser-lite,AC-HIGH/STRIP-HIGH,0.9,0.288,3.1099999999999994,True
+BadNets,10%,0.25,10.0,BaEraser-lite,AC-HIGH/STRIP-HIGH,0.9,0.288,2.8700000000000045,True
+Blended,1%,0.25,10.0,BaEraser-lite,AC-HIGH/STRIP-HIGH,0.15,0.288,2.9399999999999977,True
+Blended,5%,0.25,10.0,BaEraser-lite,AC-HIGH/STRIP-HIGH,1.33,0.288,3.6400000000000006,True
+Blended,10%,0.25,10.0,ANP,AC-HIGH/STRIP-LOW,0.21,1.0,2.8800000000000097,True

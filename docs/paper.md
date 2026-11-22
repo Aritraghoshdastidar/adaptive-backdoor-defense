@@ -1,0 +1,2 @@
+- For Blended, STRIP was evaluated at \(\alpha_{test}=0.1\), matching the training trigger strength \(\alpha_{train}=0.1\), with \(n=500\) samples.
+- 
